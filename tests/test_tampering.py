@@ -1,10 +1,7 @@
 import pytest
 import torch
-from cupbearer import data, models
-from cupbearer.scripts import (
-    eval_classifier,
-    train_classifier,
-)
+from cupbearer import data, detectors, models, tasks
+from cupbearer.scripts import eval_classifier, train_classifier, train_detector
 
 # Ignore warnings about num_workers
 pytestmark = pytest.mark.filterwarnings(
@@ -33,6 +30,13 @@ def pythia():
 @pytest.fixture(scope="module")
 def diamond():
     return torch.utils.data.Subset(data.TamperingDataset("diamonds"), range(10))
+
+
+@pytest.fixture
+def measurement_tampering_task(pythia, diamond):
+    return tasks.measurement_tampering(
+        model=pythia, train_data=diamond, test_data=diamond
+    )
 
 
 @pytest.fixture(scope="module")
@@ -68,3 +72,26 @@ def test_eval_classifier(pythia, diamond, measurement_predictor_path):
     )
 
     assert (measurement_predictor_path / "eval.json").is_file()
+
+
+@pytest.mark.slow
+def test_train_finetune_confidence_detector(
+    pythia, measurement_tampering_task, tmp_path
+):
+    train_detector(
+        task=measurement_tampering_task,
+        detector=detectors.FinetuningConfidenceAnomalyDetector(
+            out_filter=lambda x: x[:, 3]  # filters for cummulative measurment probe
+        ),
+        num_labels=4,
+        classify_task="multilabel",
+        use_untrusted=True,
+        save_path=tmp_path,
+        batch_size=2,
+        eval_batch_size=2,
+        max_steps=1,
+    )
+    assert (tmp_path / "detector.pt").is_file()
+
+    assert (tmp_path / "histogram.pdf").is_file()
+    assert (tmp_path / "eval.json").is_file()

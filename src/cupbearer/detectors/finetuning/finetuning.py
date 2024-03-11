@@ -1,23 +1,25 @@
 import copy
 import warnings
+from abc import ABC, abstractmethod
 from pathlib import Path
 
 import lightning as L
 import torch
-import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import ConcatDataset, DataLoader
 
 from cupbearer.detectors.anomaly_detector import AnomalyDetector
-from cupbearer.scripts._shared import Classifier
-from cupbearer.utils import inputs_from_batch
+from cupbearer.scripts._shared import ClassificationTask, Classifier
 
 
-class FinetuningAnomalyDetector(AnomalyDetector):
+class FinetuningAnomalyDetector(AnomalyDetector, ABC):
     def set_model(self, model):
         super().set_model(model)
         # We might as well make a copy here already, since whether we'll train this
         # detector or load weights for inference, we'll need to copy in both cases.
         self.finetuned_model = copy.deepcopy(self.model)
+
+        # setting here b/c set_model effectively serves as init
+        self.classify_task: ClassificationTask | None = None
 
     def train(
         self,
@@ -25,22 +27,31 @@ class FinetuningAnomalyDetector(AnomalyDetector):
         untrusted_data,
         save_path: Path | str,
         *,
-        num_classes: int,
+        use_untrusted: bool = False,
+        num_classes: int | None = None,
+        num_labels: int | None = None,
+        classify_task: ClassificationTask = "multiclass",
         lr: float = 1e-3,
         batch_size: int = 64,
         **trainer_kwargs,
     ):
         if trusted_data is None:
             raise ValueError("Finetuning detector requires trusted training data.")
+        self.classify_task = classify_task
         classifier = Classifier(
             self.finetuned_model,
             num_classes=num_classes,
+            num_labels=num_labels,
+            task=classify_task,
             lr=lr,
             save_hparams=False,
         )
 
         # Create a DataLoader for the clean dataset
-        clean_loader = DataLoader(trusted_data, batch_size=batch_size, shuffle=True)
+        dataset = trusted_data
+        if use_untrusted:
+            dataset = ConcatDataset([trusted_data, untrusted_data])
+        clean_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
         # Finetune the model on the clean dataset
         trainer = L.Trainer(default_root_dir=save_path, **trainer_kwargs)
@@ -62,33 +73,9 @@ class FinetuningAnomalyDetector(AnomalyDetector):
             "Layerwise scores don't exist for finetuning detector"
         )
 
-    def scores(self, batch):
-        inputs = inputs_from_batch(batch)
-        original_output = self.model(inputs)
-        finetuned_output = self.finetuned_model(inputs)
-
-        # F.kl_div requires log probabilities for the input, normal probabilities
-        # are fine for the target.
-        log_finetuned_p = finetuned_output.log_softmax(dim=-1)
-        original_p = original_output.softmax(dim=-1)
-
-        # This computes KL(original || finetuned), the argument order for the pytorch
-        # function is swapped compared to the mathematical notation.
-        # See https://pytorch.org/docs/stable/generated/torch.nn.KLDivLoss.html
-        # This is the same direction of KL divergence that Redwood used in one of their
-        # projects, though I don't know if they had a strong reason for it.
-        # Arguably a symmetric metric would make more sense, but might not matter much.
-        #
-        # Also note we don't want pytorch to do any reduction, since we want to
-        # return individual scores for each sample.
-        kl = F.kl_div(log_finetuned_p, original_p, reduction="none").sum(-1)
-
-        if torch.any(torch.isinf(kl)):
-            # We'd get an error anyway once we compute eval metrics, but better to give
-            # a more specific one here.
-            raise ValueError("Infinite KL divergence")
-
-        return kl
+    @abstractmethod
+    def scores(self, batch) -> torch.Tensor:
+        "Computes anomaly scores for the given inputs"
 
     def _get_trained_variables(self, saving: bool = False):
         return self.finetuned_model.state_dict()

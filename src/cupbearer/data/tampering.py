@@ -1,3 +1,5 @@
+from typing import Literal, get_args
+
 import torch
 from datasets import load_dataset
 
@@ -8,7 +10,14 @@ TAMPERING_DATSETS = {
 }
 
 
+InfoNames = Literal["is_correct", "is_clean"]
+
+
 class TamperingDataset(torch.utils.data.Dataset):
+    info_name_idxs: dict[InfoNames, int] = {
+        info_name: i for i, info_name in enumerate(get_args(InfoNames))
+    }
+
     def __init__(self, name: str, train: bool = True):
         # TODO: allow for local loading / saving
         super().__init__()
@@ -31,8 +40,11 @@ class TamperingDataset(torch.utils.data.Dataset):
                 [*sample["measurements"], all(sample["measurements"])],
                 dtype=torch.float32,
             ),
+            *[
+                torch.tensor(sample[info_name])
+                for info_name in self.info_name_idxs.keys()
+            ],
         )
-        # sample["is_correct"], sample["is_clean"])
 
     def __len__(self):
         return len(self.dataset)

@@ -173,7 +173,7 @@ def test_train_statistical_backdoor(tmp_path, backdoor_task, detector_type):
 def test_finetuning_detector(backdoor_task, tmp_path):
     train_detector(
         task=backdoor_task,
-        detector=detectors.FinetuningAnomalyDetector(),
+        detector=detectors.FinetuningShiftAnomalyDetector(),
         save_path=tmp_path,
         num_classes=10,
         batch_size=2,

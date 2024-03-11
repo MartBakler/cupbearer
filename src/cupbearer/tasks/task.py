@@ -7,6 +7,7 @@ from cupbearer.data import MixedData
 from cupbearer.models.models import HookedModel
 
 
+# TODO: should add clean-untrusted test
 @dataclass(kw_only=True)
 class Task:
     trusted_data: Dataset
@@ -21,13 +22,13 @@ class Task:
         trusted_data: Dataset,
         clean_test_data: Dataset,
         anomalous_test_data: Dataset,
+        untrusted_train_data: Optional[Dataset] = None,
         clean_untrusted_data: Optional[Dataset] = None,
         anomalous_data: Optional[Dataset] = None,
         clean_train_weight: Optional[float] = 0.5,
         clean_test_weight: Optional[float] = 0.5,
     ):
-        untrusted_train_data = None
-        if clean_untrusted_data and anomalous_data:
+        if not untrusted_train_data and clean_untrusted_data and anomalous_data:
             untrusted_train_data = MixedData(
                 normal=clean_untrusted_data,
                 anomalous=anomalous_data,

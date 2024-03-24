@@ -1,6 +1,7 @@
 import warnings
 from pathlib import Path
 from typing import Any
+from dataclasses import asdict
 
 import lightning as L
 from lightning.pytorch import loggers
@@ -8,7 +9,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 from torch.utils.data import DataLoader
 
 from cupbearer.models import HookedModel
-from cupbearer.scripts._shared import ClassificationTask, Classifier
+from cupbearer.scripts._shared import ClassificationTask, Classifier, LRSchedulerConf
 
 
 def main(
@@ -16,6 +17,7 @@ def main(
     train_loader: DataLoader,
     path: Path | str,
     lr: float = 1e-3,
+    lr_scheduler_conf: dict = asdict(LRSchedulerConf()),
     num_classes: int | None = None,
     num_labels: int | None = None,
     task: ClassificationTask = "multiclass",
@@ -42,6 +44,7 @@ def main(
         num_classes=num_classes,
         num_labels=num_labels,
         lr=lr,
+        lr_scheduler_conf=lr_scheduler_conf,
         val_loader_names=list(val_loaders.keys()),
         task=task,
     )

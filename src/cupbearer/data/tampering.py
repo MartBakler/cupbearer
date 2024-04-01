@@ -32,7 +32,7 @@ class TamperingDataset(torch.utils.data.Dataset):
         split = "train" if self.train else "validation"
         self.dataset = load_dataset(hf_name, split=split)
         if dataset_len:
-            self.dataset = self.dataset[:dataset_len]
+            self.dataset = self.dataset.select([i for i in range(dataset_len)])
         # set labels
         measurements = torch.tensor(self.dataset["measurements"])
         all_measurements = torch.all(measurements, dim=1, keepdim=True)

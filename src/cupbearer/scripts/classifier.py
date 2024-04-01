@@ -109,7 +109,9 @@ class Classifier(L.LightningModule):
         if not self.lr_scheduler_builder:
             return optim
         # build lr sceduler
-        lr_scheduler = self.lr_scheduler_builder(optim=optim, **self.lr_scheduler_conf)
+        lr_scheduler = self.lr_scheduler_builder(
+            optimizer=optim, **self.lr_scheduler_conf
+        )
         lr_schedule_config = {
             "scheduler": lr_scheduler,
             "interval": "step",  # applies at every step rather than every epoch

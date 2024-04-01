@@ -1,7 +1,7 @@
 import lightning as L
 import torch
 from torchmetrics.classification import Accuracy
-from typing_extensions import Literal
+from typing_extensions import Any, Callable, Literal
 
 from cupbearer.models import HookedModel
 
@@ -15,6 +15,8 @@ class Classifier(L.LightningModule):
         self,
         model: HookedModel,
         lr: float,
+        optim_conf: dict | None = None,
+        optim_builder: Callable[[Any], torch.optim.Optimizer] = torch.optim.Adam,
         lr_scheduler_conf: dict | None = None,
         lr_scheduler_builder: LRSchedulerBuilder | None = None,
         num_classes: int | None = None,
@@ -26,7 +28,9 @@ class Classifier(L.LightningModule):
     ):
         super().__init__()
         if save_hparams:
-            self.save_hyperparameters(ignore=["model", "lr_scheduler_builder"])
+            self.save_hyperparameters(
+                ignore=["model", "optim_builder", "lr_scheduler_builder"]
+            )
         if val_loader_names is None:
             val_loader_names = []
         if test_loader_names is None:
@@ -34,6 +38,8 @@ class Classifier(L.LightningModule):
 
         self.model = model
         self.lr = lr
+        self.optim_conf = optim_conf
+        self.optim_builder = optim_builder
         self.lr_scheduler_conf = lr_scheduler_conf
         self.lr_scheduler_builder = lr_scheduler_builder
         self.val_loader_names = val_loader_names
@@ -105,7 +111,7 @@ class Classifier(L.LightningModule):
             self.log(f"{name}/acc_epoch", self.val_accuracy[i])
 
     def configure_optimizers(self):
-        optim = torch.optim.Adam(self.parameters(), lr=self.lr)
+        optim = self.optim_builder(self.parameters(), lr=self.lr, **self.optim_conf)
         if not self.lr_scheduler_builder:
             return optim
         # build lr sceduler

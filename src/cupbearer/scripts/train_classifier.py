@@ -1,8 +1,9 @@
 import warnings
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import lightning as L
+import torch
 from lightning.pytorch import loggers
 from lightning.pytorch.callbacks import ModelCheckpoint
 from torch.utils.data import DataLoader
@@ -17,6 +18,8 @@ def main(
     train_loader: DataLoader,
     path: Path | str,
     lr: float = 1e-3,
+    optim_conf: dict | None = None,
+    optim_builder: Callable[[Any], torch.optim.Optimizer] = torch.optim.Adam,
     lr_scheduler_conf: dict | None = None,
     lr_scheduler_builder: LRSchedulerBuilder | None = None,
     num_classes: int | None = None,
@@ -45,6 +48,8 @@ def main(
         num_classes=num_classes,
         num_labels=num_labels,
         lr=lr,
+        optim_conf=optim_conf,
+        optim_builder=optim_builder,
         lr_scheduler_conf=lr_scheduler_conf,
         lr_scheduler_builder=lr_scheduler_builder,
         val_loader_names=list(val_loaders.keys()),
@@ -81,6 +86,8 @@ def main(
                     "train_data": repr(train_loader.dataset),
                     "batch_size": train_loader.batch_size,
                     "lr": lr,
+                    "optim": repr(optim_builder),
+                    "lr_scheduler": repr(lr_scheduler_builder),
                 }
             )
         elif path:

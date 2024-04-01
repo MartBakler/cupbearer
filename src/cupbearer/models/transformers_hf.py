@@ -19,6 +19,10 @@ class TokenDict(TypedDict):
     attention_mask: torch.Tensor
 
 
+class TamperingTokenDict(TokenDict):
+    sensor_inds: torch.Tensor
+
+
 AUTO_MODELS = {
     "code-gen": "Salesforce/codegen-350M-mono",
 }
@@ -58,33 +62,20 @@ def load_transformer(
 
 
 class TransformerBaseHF(HookedModel):
-    def __init__(
-        self,
-        model: PreTrainedModel,
-        tokenizer: PreTrainedTokenizerBase,
-        embed_dim: int,
-        max_length: int,  # TODO: find attribute in model,
-    ):
+    def __init__(self, model: PreTrainedModel, embed_dim: int):
         super().__init__()
         self.model = model
-        self.tokenizer = tokenizer
-        self.max_length = max_length
         self.embed_dim = embed_dim
 
-        # setup
-        self.tokenizer.pad_token = tokenizer.eos_token
+    def set_tokenizer(
+        cls, tokenizer: PreTrainedTokenizerBase
+    ) -> PreTrainedTokenizerBase:
+        tokenizer.pad_token = tokenizer.eos_token
+        return tokenizer
 
     @property
     def default_names(self) -> list[str]:
         return ["final_layer_embeddings"]
-
-    def process_input(self, x) -> TokenDict:
-        tokens = self.tokenizer(
-            x, max_length=self.max_length, padding="max_length", return_tensors="pt"
-        )
-        # load to device
-        tokens = {k: v.to(self.model.device) for k, v in tokens.items()}
-        return tokens
 
     def get_single_token(self, x):
         tokens: TokenDict = self.tokenizer(x)
@@ -95,7 +86,6 @@ class TransformerBaseHF(HookedModel):
         out: BaseModelOutputWithPast = self.model(**tokens)
         embeddings = out.last_hidden_state
         assert embeddings.shape == (b, s, self.embed_dim), embeddings.shape
-        self.store("last_hidden_state", embeddings)
         return embeddings
 
 
@@ -104,32 +94,28 @@ class ClassifierTransformerHF(TransformerBaseHF):
     def __init__(
         self,
         model: PreTrainedModel,
-        tokenizer: PreTrainedTokenizerBase,
         embed_dim: int,
-        max_length: int,
+        pad_token_id: int,
         num_classes: int,
     ):
-        super().__init__(
-            model=model, tokenizer=tokenizer, embed_dim=embed_dim, max_length=max_length
-        )
+        super().__init__(model=model, embed_dim=embed_dim)
+        self.pad_token_id = pad_token_id
         self.num_classes = num_classes
         self.classifier = nn.Linear(self.embed_dim, self.num_classes)
 
-    def forward(self, x: str | list[str]):
-        # get tokens
-        tokens = self.process_input(x)
+    # TODO: fix
+    def forward(self, x: TokenDict):
         # get embeddings
-        embeddings = self.get_embeddings(tokens)
-
-        # TODO (odk) se store (doesn't this slow down training?)
+        embeddings = self.get_embeddings(x)
 
         # take mean across non-padded dimensions
-        mask = tokens["input_ids"] != self.tokenizer.pad_token_id
+        mask = x["input_ids"] != self.pad_token_id
         mask = mask.unsqueeze(-1)
-        assert mask.shape == tokens["input_ids"] + (1,)
-        assert embeddings.shape == tokens["input_ids"] + (self.embed_dim,)
+        assert mask.shape == x["input_ids"] + (1,)
+        assert embeddings.shape == x["input_ids"] + (self.embed_dim,)
         embeddings = embeddings * mask
         embeddings = embeddings.sum(dim=1) / mask.sum(dim=1)
+        self.store("last_hidden_state", embeddings)
 
         # compute logits
         logits = self.classifier(embeddings)
@@ -138,45 +124,39 @@ class ClassifierTransformerHF(TransformerBaseHF):
 
 class TamperingPredictionTransformer(TransformerBaseHF):
     # TODO: factor out token processing, create interface for using tokenizer in dataset
-    def __init__(
-        self,
-        model: PreTrainedModel,
-        tokenizer: PreTrainedTokenizerBase,
-        embed_dim: int,
-        max_length: int,
-        n_sensors: int,
-        sensor_token: str = " omit",
-    ):
-        super().__init__(
-            model=model, tokenizer=tokenizer, embed_dim=embed_dim, max_length=max_length
-        )
+    def __init__(self, model: PreTrainedModel, embed_dim: int, n_sensors: int = 3):
+        super().__init__(model=model, embed_dim=embed_dim)
         self.n_sensors = n_sensors
         self.n_probes = self.n_sensors + 1  # +1 for aggregate measurements
-        self.sensor_token_id = self.get_single_token(sensor_token)
 
         self.probes = nn.ModuleList(
             [nn.Linear(self.embed_dim, 1) for _ in range(self.n_probes)]
         )
 
-    def forward(self, x: str | list[str]):
-        tokens = self.process_input(x)
-        embeddings = self.get_embeddings(tokens)
-        b = embeddings.shape[0]
+    @property
+    def default_names(self) -> list[str]:
+        return ["probe_embs"]
 
-        # TODO (odk) use store
+    def set_tokenizer(
+        self, tokenizer: PreTrainedTokenizerBase
+    ) -> PreTrainedTokenizerBase:
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.padding_side = "left"
+        return tokenizer
 
-        # sensor embeddings
-        batch_inds, seq_ids = torch.where(
-            tokens["input_ids"] == self.sensor_token_id
-        )  # TODO: pre-specify that its always 3?
-        sensor_embs = embeddings[batch_inds, seq_ids].reshape(
-            b, self.n_sensors, self.embed_dim
+    def forward(self, x: TamperingTokenDict):
+        b = x["input_ids"].shape[0]
+        # get embeddings
+        embeddings = self.get_embeddings({k: x[k] for k in TokenDict.__required_keys__})
+        sensor_inds_reshaped = (
+            x["sensor_inds"].unsqueeze(-1).expand(b, self.n_sensors, self.embed_dim)
         )
-        # last token embedding (for aggregate measurement)
-        last_token_ind = tokens["attention_mask"].sum(dim=1) - 1
-        last_embs = embeddings[torch.arange(b), last_token_ind]
-        probe_embs = torch.concat([sensor_embs, last_embs.unsqueeze(dim=1)], axis=1)
+        sensor_embs = torch.gather(embeddings, dim=1, index=sensor_inds_reshaped)
+        last_emb = embeddings[:, -1, :].unsqueeze(dim=1)
+        probe_embs = torch.concat([sensor_embs, last_emb], axis=1)
         assert probe_embs.shape == (b, self.n_probes, self.embed_dim)
+        self.store("probe_embs", probe_embs)
+        # get logits
         logits = torch.concat(
             [
                 probe(emb)

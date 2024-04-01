@@ -62,10 +62,12 @@ class Classifier(L.LightningModule):
         return torch.nn.functional.binary_cross_entropy_with_logits
 
     def _shared_step(self, batch):
-        if len(batch) == 2:
-            x, y = batch
-        else:
+        if isinstance(batch, tuple):
             x, y, *_info = batch
+        elif isinstance(batch, dict):
+            x = batch["x"]
+            y = batch["y"]
+            _info = batch.get("info", {})
         logits = self.model(x)
         loss = self.loss_func(logits, y)
         return loss, logits, y

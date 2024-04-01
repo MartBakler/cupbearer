@@ -8,7 +8,7 @@ import torch
 from torch.utils.data import ConcatDataset, DataLoader
 
 from cupbearer.detectors.anomaly_detector import AnomalyDetector
-from cupbearer.scripts._shared import ClassificationTask, Classifier
+from cupbearer.scripts.classifier import ClassificationTask, Classifier
 
 
 class FinetuningAnomalyDetector(AnomalyDetector, ABC):

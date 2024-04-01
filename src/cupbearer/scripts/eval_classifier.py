@@ -6,7 +6,7 @@ import lightning as L
 from torch.utils.data import DataLoader, Dataset
 
 from cupbearer.models import HookedModel
-from cupbearer.scripts._shared import Classifier
+from cupbearer.scripts.classifier import Classifier
 
 
 def main(

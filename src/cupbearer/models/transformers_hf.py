@@ -11,8 +11,6 @@ from transformers.models.gpt_neox.configuration_gpt_neox import GPTNeoXConfig
 from transformers.models.gpt_neox.tokenization_gpt_neox_fast import GPTNeoXTokenizerFast
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
-from cupbearer.models import HookedModel
-
 
 class TokenDict(TypedDict):
     input_ids: torch.Tensor
@@ -61,7 +59,7 @@ def load_transformer(
     return transformer, tokenizer, emb_dim, max_len
 
 
-class TransformerBaseHF(HookedModel):
+class TransformerBaseHF(nn.Module):
     def __init__(self, model: PreTrainedModel, embed_dim: int):
         super().__init__()
         self.model = model
@@ -73,17 +71,13 @@ class TransformerBaseHF(HookedModel):
         tokenizer.pad_token = tokenizer.eos_token
         return tokenizer
 
-    @property
-    def default_names(self) -> list[str]:
-        return ["final_layer_embeddings"]
-
     def get_single_token(self, x):
         tokens: TokenDict = self.tokenizer(x)
         return tokens["input_ids"][0]
 
-    def get_embeddings(self, tokens: TokenDict) -> torch.Tensor:
+    def get_embeddings(self, tokens: TokenDict, **kwargs) -> torch.Tensor:
         b, s = tokens["input_ids"].shape
-        out: BaseModelOutputWithPast = self.model(**tokens)
+        out: BaseModelOutputWithPast = self.model(**tokens, **kwargs)
         embeddings = out.last_hidden_state
         assert embeddings.shape == (b, s, self.embed_dim), embeddings.shape
         return embeddings
@@ -104,9 +98,9 @@ class ClassifierTransformerHF(TransformerBaseHF):
         self.classifier = nn.Linear(self.embed_dim, self.num_classes)
 
     # TODO: fix
-    def forward(self, x: TokenDict):
+    def forward(self, x: TokenDict, **emb_kwargs):
         # get embeddings
-        embeddings = self.get_embeddings(x)
+        embeddings = self.get_embeddings(x, **emb_kwargs)
 
         # take mean across non-padded dimensions
         mask = x["input_ids"] != self.pad_token_id
@@ -115,7 +109,6 @@ class ClassifierTransformerHF(TransformerBaseHF):
         assert embeddings.shape == x["input_ids"] + (self.embed_dim,)
         embeddings = embeddings * mask
         embeddings = embeddings.sum(dim=1) / mask.sum(dim=1)
-        self.store("last_hidden_state", embeddings)
 
         # compute logits
         logits = self.classifier(embeddings)
@@ -133,10 +126,6 @@ class TamperingPredictionTransformer(TransformerBaseHF):
             [nn.Linear(self.embed_dim, 1) for _ in range(self.n_probes)]
         )
 
-    @property
-    def default_names(self) -> list[str]:
-        return ["probe_embs"]
-
     def set_tokenizer(
         self, tokenizer: PreTrainedTokenizerBase
     ) -> PreTrainedTokenizerBase:
@@ -144,10 +133,12 @@ class TamperingPredictionTransformer(TransformerBaseHF):
         tokenizer.padding_side = "left"
         return tokenizer
 
-    def forward(self, x: TamperingTokenDict):
+    def forward(self, x: TamperingTokenDict, **emb_kwargs):
         b = x["input_ids"].shape[0]
         # get embeddings
-        embeddings = self.get_embeddings({k: x[k] for k in TokenDict.__required_keys__})
+        embeddings = self.get_embeddings(
+            {k: x[k] for k in TokenDict.__required_keys__}, **emb_kwargs
+        )
         sensor_inds_reshaped = (
             x["sensor_inds"].unsqueeze(-1).expand(b, self.n_sensors, self.embed_dim)
         )
@@ -155,7 +146,6 @@ class TamperingPredictionTransformer(TransformerBaseHF):
         last_emb = embeddings[:, -1, :].unsqueeze(dim=1)
         probe_embs = torch.concat([sensor_embs, last_emb], axis=1)
         assert probe_embs.shape == (b, self.n_probes, self.embed_dim)
-        self.store("probe_embs", probe_embs)
         # get logits
         logits = torch.concat(
             [

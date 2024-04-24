@@ -1,6 +1,6 @@
 import lightning as L
 import torch
-from torchmetrics.classification import Accuracy
+from torchmetrics.classification import Accuracy, AUROC
 from typing_extensions import Any, Callable, Literal
 
 from cupbearer.models import HookedModel
@@ -61,6 +61,12 @@ class Classifier(L.LightningModule):
                 for _ in test_loader_names
             ]
         )
+        self.test_auroc = torch.nn.ModuleList(
+            [
+                AUROC(task=task, num_classes=num_classes, num_labels=num_labels)
+                for _ in test_loader_names
+            ]
+        )
 
     def _get_loss_func(self, task):
         if task == "multiclass":
@@ -105,6 +111,8 @@ class Classifier(L.LightningModule):
     def on_test_epoch_end(self):
         for i, name in enumerate(self.test_loader_names):
             self.log(f"{name}/acc_epoch", self.test_accuracy[i])
+            self.log(f"{name}/auroc_epoch", self.test_auroc[i])
+
 
     def on_validation_epoch_end(self):
         for i, name in enumerate(self.val_loader_names):

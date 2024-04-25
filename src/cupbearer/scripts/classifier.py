@@ -97,6 +97,8 @@ class Classifier(L.LightningModule):
         self.log(f"{name}/loss", loss)
         self.test_accuracy[dataloader_idx](logits, y)
         self.log(f"{name}/acc_step", self.test_accuracy[dataloader_idx])
+        self.test_auroc[dataloader_idx](logits, y.to(torch.int))
+        self.log(f"{name}/auroc_step", self.test_auroc[dataloader_idx])
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
         loss, logits, y = self._shared_step(batch)

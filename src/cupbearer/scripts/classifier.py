@@ -25,6 +25,7 @@ class Classifier(L.LightningModule):
         test_loader_names: list[str] | None = None,
         save_hparams: bool = True,
         task: ClassificationTask = "multiclass",
+        loss_func: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] | None = None
     ):
         super().__init__()
         if save_hparams:
@@ -45,7 +46,7 @@ class Classifier(L.LightningModule):
         self.val_loader_names = val_loader_names
         self.test_loader_names = test_loader_names
         self.task = task
-        self.loss_func = self._get_loss_func(self.task)
+        self.loss_func = loss_func if loss_func is not None else self._get_loss_func(self.task)
         self.train_accuracy = Accuracy(
             task=self.task, num_classes=num_classes, num_labels=num_labels
         )

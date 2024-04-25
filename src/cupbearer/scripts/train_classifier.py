@@ -25,6 +25,7 @@ def main(
     num_classes: int | None = None,
     num_labels: int | None = None,
     task: ClassificationTask = "multiclass",
+    loss_func: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] | None = None,
     val_loaders: DataLoader | dict[str, DataLoader] | None = None,
     # If True, returns the Lighting Trainer object (which has the model and a bunch
     # of other information, this may be useful when using interactively).
@@ -54,6 +55,7 @@ def main(
         lr_scheduler_builder=lr_scheduler_builder,
         val_loader_names=list(val_loaders.keys()),
         task=task,
+        loss_func=loss_func
     )
 
     callbacks = trainer_kwargs.pop("callbacks", [])

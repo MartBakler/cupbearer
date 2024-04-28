@@ -5,6 +5,7 @@ from .finetuning import (
     FinetuningConfidenceAnomalyDetector,
     FinetuningShiftAnomalyDetector,
 )
+from .probe import GroundTruthProbeDetector
 from .statistical import (
     MahalanobisDetector,
     QuantumEntropyDetector,

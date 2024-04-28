@@ -100,7 +100,6 @@ def main(
         trainer_kwargs["logger"] = metrics_logger
     if metrics_logger is not None:
         metrics_logger.log_hyperparams(hparams)
-        metrics_logger.log_hyperparams(trainer_kwargs)
     
     trainer = L.Trainer(default_root_dir=path, **trainer_kwargs)
 

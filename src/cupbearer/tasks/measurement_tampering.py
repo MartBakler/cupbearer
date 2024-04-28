@@ -9,7 +9,7 @@ from .task import Task
 
 def trusted_data_mask(data: Dataset):
     clean_mask = np.array(
-        [info[TamperingDataset.info_name_idxs["is_clean"]] for x, y, *info in data]
+        [info["clean"] for x, y, *info in data]
     )
     return clean_mask
 
@@ -17,7 +17,7 @@ def trusted_data_mask(data: Dataset):
 def anomalous_data_mask(data: Dataset):
     tampered_mask = np.array(
         [
-            y[-1] != info[TamperingDataset.info_name_idxs["is_correct"]]
+            y[-1] != info["correct"]
             for x, y, *info in data
         ]
     )

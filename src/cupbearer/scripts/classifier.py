@@ -14,10 +14,9 @@ class Classifier(L.LightningModule):
     def __init__(
         self,
         model: HookedModel,
-        lr: float,
-        optim_conf: dict | None = None,
+        optim_conf: dict = {},
         optim_builder: Callable[[Any], torch.optim.Optimizer] = torch.optim.Adam,
-        lr_scheduler_conf: dict | None = None,
+        lr_scheduler_conf: dict = {},
         lr_scheduler_builder: LRSchedulerBuilder | None = None,
         num_classes: int | None = None,
         num_labels: int | None = None,
@@ -30,7 +29,7 @@ class Classifier(L.LightningModule):
         super().__init__()
         if save_hparams:
             self.save_hyperparameters(
-                ignore=["model", "optim_builder", "lr_scheduler_builder"]
+                ignore=["model"]
             )
         if val_loader_names is None:
             val_loader_names = []
@@ -38,7 +37,6 @@ class Classifier(L.LightningModule):
             test_loader_names = []
 
         self.model = model
-        self.lr = lr
         self.optim_conf = optim_conf
         self.optim_builder = optim_builder
         self.lr_scheduler_conf = lr_scheduler_conf
@@ -122,7 +120,7 @@ class Classifier(L.LightningModule):
             self.log(f"{name}/acc_epoch", self.val_accuracy[i])
 
     def configure_optimizers(self):
-        optim = self.optim_builder(self.parameters(), lr=self.lr, **self.optim_conf)
+        optim = self.optim_builder(self.parameters(), **self.optim_conf)
         if not self.lr_scheduler_builder:
             return optim
         # build lr sceduler

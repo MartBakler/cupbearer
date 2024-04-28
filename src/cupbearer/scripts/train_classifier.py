@@ -18,9 +18,9 @@ def main(
     train_loader: DataLoader,
     path: Path | str,
     lr: float = 1e-3,
-    optim_conf: dict | None = None,
+    optim_conf: dict = {},
     optim_builder: Callable[[Any], torch.optim.Optimizer] = torch.optim.Adam,
-    lr_scheduler_conf: dict | None = None,
+    lr_scheduler_conf: dict = {},
     lr_scheduler_builder: LRSchedulerBuilder | None = None,
     num_classes: int | None = None,
     num_labels: int | None = None,
@@ -43,12 +43,14 @@ def main(
         val_loaders = {}
     elif isinstance(val_loaders, DataLoader):
         val_loaders = {"val": val_loaders}
-
+    
+    # set learning rate in optim conf if not present
+    if "lr" not in optim_conf: 
+        optim_conf["lr"] = lr
     classifier = Classifier(
         model=model,
         num_classes=num_classes,
         num_labels=num_labels,
-        lr=lr,
         optim_conf=optim_conf,
         optim_builder=optim_builder,
         lr_scheduler_conf=lr_scheduler_conf,
@@ -78,20 +80,14 @@ def main(
     trainer_kwargs["callbacks"] = callbacks
 
     # Define metrics logger
+    hparams =  {
+        "model": repr(model),
+        "train_data": repr(train_loader.dataset),
+        "batch_size": train_loader.batch_size,
+    }
     if "logger" not in trainer_kwargs:
         if wandb:
             metrics_logger = loggers.WandbLogger(project="cupbearer")
-            metrics_logger.experiment.config.update(trainer_kwargs)
-            metrics_logger.experiment.config.update(
-                {
-                    "model": repr(model),
-                    "train_data": repr(train_loader.dataset),
-                    "batch_size": train_loader.batch_size,
-                    "lr": lr,
-                    "optim": repr(optim_builder),
-                    "lr_scheduler": repr(lr_scheduler_builder),
-                }
-            )
         elif path:
             metrics_logger = loggers.TensorBoardLogger(
                 save_dir=path,
@@ -102,7 +98,10 @@ def main(
         else:
             metrics_logger = None
         trainer_kwargs["logger"] = metrics_logger
-
+    if metrics_logger is not None:
+        metrics_logger.log_hyperparams(hparams)
+        metrics_logger.log_hyperparams(trainer_kwargs)
+    
     trainer = L.Trainer(default_root_dir=path, **trainer_kwargs)
 
     with warnings.catch_warnings():

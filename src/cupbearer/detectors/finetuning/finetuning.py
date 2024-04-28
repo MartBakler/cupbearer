@@ -12,14 +12,16 @@ from cupbearer.scripts.classifier import ClassificationTask, Classifier
 
 
 class FinetuningAnomalyDetector(AnomalyDetector, ABC):
+
+    def __init__(self, args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.classify_task: ClassificationTask | None = None
+        
     def set_model(self, model):
         super().set_model(model)
         # We might as well make a copy here already, since whether we'll train this
         # detector or load weights for inference, we'll need to copy in both cases.
         self.finetuned_model = copy.deepcopy(self.model)
-
-        # setting here b/c set_model effectively serves as init
-        self.classify_task: ClassificationTask | None = None
 
     def train(
         self,

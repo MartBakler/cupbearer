@@ -1,13 +1,14 @@
 import lightning as L
 import torch
-from torchmetrics.classification import Accuracy, AUROC
-from typing_extensions import Any, Callable, Literal
+from torchmetrics.classification import AUROC, Accuracy
+from typing_extensions import Any, Callable, Literal, Union
 
 from cupbearer.models import HookedModel
 
 from .lr_scheduler import LRSchedulerBuilder
 
 ClassificationTask = Literal["binary", "multiclass", "multilabel"]
+Info = Union[torch.Tensor, dict[str, torch.Tensor]]
 
 
 class Classifier(L.LightningModule):
@@ -24,13 +25,12 @@ class Classifier(L.LightningModule):
         test_loader_names: list[str] | None = None,
         save_hparams: bool = True,
         task: ClassificationTask = "multiclass",
-        loss_func: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] | None = None
+        loss_func: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] | None = None,
+        y_func: Callable[[torch.Tensor, Info], torch.Tensor] | None = None,
     ):
         super().__init__()
         if save_hparams:
-            self.save_hyperparameters(
-                ignore=["model"]
-            )
+            self.save_hyperparameters(ignore=["model"])
         if val_loader_names is None:
             val_loader_names = []
         if test_loader_names is None:
@@ -44,7 +44,10 @@ class Classifier(L.LightningModule):
         self.val_loader_names = val_loader_names
         self.test_loader_names = test_loader_names
         self.task = task
-        self.loss_func = loss_func if loss_func is not None else self._get_loss_func(self.task)
+        self.loss_func = (
+            loss_func if loss_func is not None else self._get_loss_func(self.task)
+        )
+        self.y_func = y_func
         self.train_accuracy = Accuracy(
             task=self.task, num_classes=num_classes, num_labels=num_labels
         )
@@ -73,12 +76,14 @@ class Classifier(L.LightningModule):
         return torch.nn.functional.binary_cross_entropy_with_logits
 
     def _shared_step(self, batch):
-        if isinstance(batch, tuple):
-            x, y, *_info = batch
-        elif isinstance(batch, dict):
+        if isinstance(batch, dict):
             x = batch["x"]
             y = batch["y"]
-            _info = batch.get("info", {})
+            info = batch.get("info", {})
+        else:
+            x, y, info = batch
+        if self.y_func:
+            y = self.y_func(y, info)
         logits = self.model(x)
         loss = self.loss_func(logits, y)
         return loss, logits, y
@@ -113,7 +118,6 @@ class Classifier(L.LightningModule):
         for i, name in enumerate(self.test_loader_names):
             self.log(f"{name}/acc_epoch", self.test_accuracy[i])
             self.log(f"{name}/auroc_epoch", self.test_auroc[i])
-
 
     def on_validation_epoch_end(self):
         for i, name in enumerate(self.val_loader_names):

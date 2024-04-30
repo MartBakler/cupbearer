@@ -1,26 +1,20 @@
 import numpy as np
 from torch.utils.data import Dataset, Subset
 
-from cupbearer.data import TamperingDataset
 from cupbearer.models import TamperingPredictionTransformer
 
 from .task import Task
 
 
 def trusted_data_mask(data: Dataset):
-    clean_mask = np.array(
-        [info["clean"] for x, y, *info in data]
-    )
+    clean_mask = np.array([el["info"]["clean"] for el in data]).astype(int)
     return clean_mask
 
 
 def anomalous_data_mask(data: Dataset):
     tampered_mask = np.array(
-        [
-            y[-1] != info["correct"]
-            for x, y, *info in data
-        ]
-    )
+        [el["y"][-1] != el["info"]["correct"] for el in data]
+    ).astype(int)
     return tampered_mask
     # check if all(measurments) = is correct
 

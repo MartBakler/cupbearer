@@ -62,7 +62,7 @@ class Classifier(L.LightningModule):
         )
         self.test_auroc = torch.nn.ModuleList(
             [
-                AUROC(task=task, num_classes=num_classes, num_labels=num_labels)
+                AUROC(task=task, num_classes=num_classes, num_labels=num_labels, average=None)
                 for _ in test_loader_names
             ]
         )
@@ -97,7 +97,8 @@ class Classifier(L.LightningModule):
         self.test_accuracy[dataloader_idx](logits, y)
         self.log(f"{name}/acc_step", self.test_accuracy[dataloader_idx])
         self.test_auroc[dataloader_idx](logits, y.to(torch.int))
-        self.log(f"{name}/auroc_step", self.test_auroc[dataloader_idx])
+        for i, val in enumerate(self.test_auroc[dataloader_idx].compute()):
+            self.log(f"{name}/auroc_{i}_step", val)
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
         loss, logits, y = self._shared_step(batch)
@@ -112,7 +113,8 @@ class Classifier(L.LightningModule):
     def on_test_epoch_end(self):
         for i, name in enumerate(self.test_loader_names):
             self.log(f"{name}/acc_epoch", self.test_accuracy[i])
-            self.log(f"{name}/auroc_epoch", self.test_auroc[i])
+            for j, val in enumerate(self.test_auroc[i].compute()):
+                self.log(f"{name}/auroc_{j}_epoch", val)
 
 
     def on_validation_epoch_end(self):

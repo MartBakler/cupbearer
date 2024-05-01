@@ -1,11 +1,15 @@
+from copy import deepcopy
+
 import lightning as L
 import torch
-from torchmetrics.classification import AUROC, Accuracy
+from torchmetrics.classification import Accuracy
+from torchmetrics.metric import Metric
 from typing_extensions import Any, Callable, Literal, Union
 
 from cupbearer.models import HookedModel
 
 from .lr_scheduler import LRSchedulerBuilder
+from .metrics import DictOutWrapper, MultioutDictWrapper
 
 ClassificationTask = Literal["binary", "multiclass", "multilabel"]
 Info = Union[torch.Tensor, dict[str, torch.Tensor]]
@@ -27,6 +31,7 @@ class Classifier(L.LightningModule):
         task: ClassificationTask = "multiclass",
         loss_func: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] | None = None,
         y_func: Callable[[torch.Tensor, Info], torch.Tensor] | None = None,
+        test_metrics: dict[str, Callable[[Any], Metric]] = {},
     ):
         super().__init__()
         if save_hparams:
@@ -63,12 +68,13 @@ class Classifier(L.LightningModule):
                 for _ in test_loader_names
             ]
         )
-        self.test_auroc = torch.nn.ModuleList(
-            [
-                AUROC(task=task, num_classes=num_classes, num_labels=num_labels, average=None)
-                for _ in test_loader_names
-            ]
+        self.test_metrics = torch.nn.ModuleList(
+            [torch.nn.ModuleDict(deepcopy(test_metrics)) for _ in test_loader_names]
         )
+
+    def add_test_metrics(self, metric_dict: dict[Any, Metric]):
+        for i in range(len(self.test_loader_names)):
+            self.test_metrics[i].update(metric_dict)
 
     def _get_loss_func(self, task):
         if task == "multiclass":
@@ -88,6 +94,17 @@ class Classifier(L.LightningModule):
         loss = self.loss_func(logits, y)
         return loss, logits, y
 
+    def log(self, name: str, value, *args, **kwargs):
+        # handle dictionary metrics
+        if isinstance(value, DictOutWrapper):
+            for k, metric in value.metrics.items():
+                self.log(f"{name}_{k}", metric, *args, **kwargs)
+        elif isinstance(value, MultioutDictWrapper):
+            for i, metric in enumerate(value.metrics):
+                self.log(f"{name}_{i}", metric, *args, **kwargs)
+        else:
+            super().log(name, value, *args, **kwargs)
+
     def training_step(self, batch, batch_idx):
         loss, logits, y = self._shared_step(batch)
         self.log("train/loss", loss, prog_bar=True)
@@ -101,9 +118,9 @@ class Classifier(L.LightningModule):
         self.log(f"{name}/loss", loss)
         self.test_accuracy[dataloader_idx](logits, y)
         self.log(f"{name}/acc_step", self.test_accuracy[dataloader_idx])
-        self.test_auroc[dataloader_idx](logits, y.to(torch.int))
-        for i, val in enumerate(self.test_auroc[dataloader_idx].compute()):
-            self.log(f"{name}/auroc_{i}_step", val)
+        # custom test metrics
+        for test_metric in self.test_metrics[dataloader_idx].values():
+            test_metric(logits, y)
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
         loss, logits, y = self._shared_step(batch)
@@ -118,8 +135,8 @@ class Classifier(L.LightningModule):
     def on_test_epoch_end(self):
         for i, name in enumerate(self.test_loader_names):
             self.log(f"{name}/acc_epoch", self.test_accuracy[i])
-            for j, val in enumerate(self.test_auroc[i].compute()):
-                self.log(f"{name}/auroc_{j}_epoch", val)
+            for k, test_metric in self.test_metrics[i].items():
+                self.log(f"{name}/{k}_epoch", test_metric)
 
     def on_validation_epoch_end(self):
         for i, name in enumerate(self.val_loader_names):

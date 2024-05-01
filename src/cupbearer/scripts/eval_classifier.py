@@ -4,6 +4,7 @@ from typing import Optional
 
 import lightning as L
 from torch.utils.data import DataLoader, Dataset
+from torchmetrics import Metric
 
 from cupbearer.models import HookedModel
 from cupbearer.scripts.classifier import Classifier
@@ -15,6 +16,7 @@ def main(
     path: Path | str,
     max_batches: Optional[int] = None,
     batch_size: int = 2048,
+    test_metrics: dict[str, Metric] = {},
 ):
     path = Path(path)
 
@@ -34,6 +36,8 @@ def main(
         default_root_dir=path,
         limit_test_batches=max_batches,
     )
+    classifier.add_test_metrics(test_metrics)
+
     metrics = trainer.test(classifier, [dataloader])
 
     with open(path / "eval.json", "w") as f:

@@ -18,6 +18,7 @@ def quirky_lm(
     device="cuda",
     include_untrusted: bool = False,
     fake_model: bool = False,
+    standardize_template: bool = False
 ):
     from elk_generalization.datasets.loader_utils import templatize_quirky_dataset
     from peft import AutoPeftModelForCausalLM
@@ -53,9 +54,9 @@ def quirky_lm(
     dataset = templatize_quirky_dataset(
         raw_dataset,
         ds_name=f"quirky_{dataset_name}_raw",
-        standardize_templates=False,
+        standardize_templates=standardize_template,
         method="random" if mixture else "first",
-        random_names=random_names,
+        random_names=random_names
     )
 
     ########################

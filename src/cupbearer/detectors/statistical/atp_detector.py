@@ -12,6 +12,7 @@ from sklearn.ensemble import IsolationForest
 import plotly.express as px
 import torch
 from cupbearer import detectors, tasks, utils, scripts
+from cupbearer.detectors.statistical.statistical import StatisticalDetector
 from cupbearer.data import HuggingfaceDataset
 from torch import Tensor, nn
 
@@ -113,7 +114,7 @@ def atp(model: nn.Module, noise_acts: dict[str, Tensor], *, head_dim: int = 0):
         # Clear grads on the model just to be safe
         model.zero_grad()
 
-class AttributionDetector(detectors.statistical.statistical.StatisticalDetector, ABC):
+class AttributionDetector(StatisticalDetector, ABC):
     
     @abstractmethod
     def distance_function(self, effects: Tensor):

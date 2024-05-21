@@ -1,12 +1,8 @@
-import numpy as np
 import torch
 from einops import rearrange
 
 from cupbearer.detectors.statistical.helpers import local_outlier_factor
-from cupbearer.detectors.statistical.mahalanobis_detector import log_chi_squared_percentiles
-from cupbearer.detectors.statistical.statistical import (
-    StatisticalDetector,
-)
+from cupbearer.detectors.statistical.statistical import StatisticalDetector
 
 class LOFDetector(StatisticalDetector):
     def init_variables(self, activation_sizes: dict[str, torch.Size], device):
@@ -18,7 +14,7 @@ class LOFDetector(StatisticalDetector):
                     "covariance matrices are learned along the first dimension)."
                 )
         self._activations = {
-            k: torch.zeros((self.data_size, size[-1]), device=device)
+            k: torch.empty((0, size[-1]), device=device)
             for k, size in activation_sizes.items()
         }
     

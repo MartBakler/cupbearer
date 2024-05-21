@@ -5,7 +5,7 @@ from cupbearer.detectors.statistical import atp_detector
 from pathlib import Path
 from cupbearer.detectors.activations import get_last_token_activation_function_for_task
 
-def main(detector_type, first_layer, last_layer, model_name, features, k=20):
+def main(detector_type, first_layer, last_layer, model_name, features, ablation, k=20):
     layers = list(range(first_layer, last_layer + 1))
 
     task = tasks.quirky_lm(include_untrusted=True, mixture=True, standardize_template=True)
@@ -26,11 +26,11 @@ def main(detector_type, first_layer, last_layer, model_name, features, k=20):
         layer_dict = {f"hf_model.base_model.model.model.layers.{layer}.self_attn.output": (4096,) for layer in layers}
 
         if detector_type == "mahalonobis":
-            detector = atp_detector.MahaAttributionDetector(layer_dict, effect_prob_func, ablation=args.ablation)
+            detector = atp_detector.MahaAttributionDetector(layer_dict, effect_prob_func, ablation=ablation)
         elif detector_type == "isoforest":
-            detector = atp_detector.IsoForestAttributionDetector(layer_dict, effect_prob_func, ablation=args.ablation)
+            detector = atp_detector.IsoForestAttributionDetector(layer_dict, effect_prob_func, ablation=ablation)
         elif detector_type == "lof":
-            detector = atp_detector.LOFAttributionDetector(layer_dict, effect_prob_func, k=k, ablation=args.ablation)
+            detector = atp_detector.LOFAttributionDetector(layer_dict, effect_prob_func, k=k, ablation=ablation)
 
         emb = task.model.hf_model.get_input_embeddings()
         emb.requires_grad_(True)
@@ -78,5 +78,5 @@ if __name__ == '__main__':
     parser.add_argument('--ablation', type=str, default='mean', help='Ablation to use (mean, zero)')
 
     args = parser.parse_args()
-    main(args.detector_type, args.first_layer, args.last_layer, args.model_name, args.features)
+    main(args.detector_type, args.first_layer, args.last_layer, args.model_name, args.features, args.ablation)
 

@@ -47,7 +47,9 @@ def get_activations(
                         input if isinstance(input, torch.Tensor) else input[0]
                     )
                 else:
-                    activations[name] = output
+                    activations[name] = (
+                        output if isinstance(output, torch.Tensor) else output[0]
+                        )
 
                 if set(names).issubset(activations.keys()):
                     # HACK: stop the forward pass to save time

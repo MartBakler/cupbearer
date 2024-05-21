@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Callable, Any
 
 import pdb
 
@@ -11,6 +12,7 @@ from sklearn.ensemble import IsolationForest
 import plotly.express as px
 import torch
 from cupbearer import detectors, tasks, utils, scripts
+from cupbearer.data import HuggingfaceDataset
 from torch import Tensor, nn
 
 import pickle
@@ -111,17 +113,25 @@ def atp(model: nn.Module, noise_acts: dict[str, Tensor], *, head_dim: int = 0):
         # Clear grads on the model just to be safe
         model.zero_grad()
 
-class AttributionDetector(detectors.AnomalyDetector, ABC):
+class AttributionDetector(detectors.statistical.statistical.StatisticalDetector, ABC):
     
     @abstractmethod
     def distance_function(self, effects: Tensor):
         pass
     
-    def __init__(self, shapes: dict[str, tuple[int, ...]], output_func, task):
-        super().__init__()
+    def __init__(
+            self, 
+            shapes: dict[str, tuple[int, ...]], 
+            output_func: Callable[[torch.Tensor], torch.Tensor],
+            ablation: str = 'zero'):
+        
+        def identity_activation_func(activation, _, name):
+            return activation
+
+        super().__init__(shapes.keys(), identity_activation_func)
         self.shapes = shapes
         self.output_func = output_func
-        self.model = task.model
+        self.ablation = ablation
 
     @torch.enable_grad()
     def train(
@@ -132,58 +142,98 @@ class AttributionDetector(detectors.AnomalyDetector, ABC):
         batch_size: int = 1,
         **kwargs,
     ):
-        if Path(save_path).exists():
-            self.load_weights(save_path)
-        else:
-            assert trusted_data is not None
 
-            dtype = self.model.hf_model.dtype
-            device = self.model.hf_model.device
+        assert trusted_data is not None
 
-            # Why shape[-2]? We are going to sum over the last dimension during attribution
-            # patching. We'll then use the second-to-last dimension as our main dimension
-            # to fit Gaussians to (all earlier dimensions will be summed out first).
-            # This is kind of arbitrary and we're putting the onus on the user to make
-            # sure this makes sense.
-            self._means = {
-                name: torch.zeros(32, device=device)
-                for name, shape in self.shapes.items()
-            }
-            self._Cs = {
-                name: torch.zeros(32, 32, device=device)
-                for name, shape in self.shapes.items()
-            }
-            self._n = 0
-            self._effects = {
-                name: torch.zeros(len(trusted_data), 32, device=device)
-                for name, shape in self.shapes.items()
-            }
+        dtype = self.model.hf_model.dtype
+        device = self.model.hf_model.device
 
-            dataloader = torch.utils.data.DataLoader(trusted_data, batch_size=batch_size)
-            for i, batch in tqdm(enumerate(dataloader)):
-                inputs = utils.inputs_from_batch(batch)
-                noise = {
-                    name: torch.zeros((batch_size, 1, *shape), device=device, dtype=dtype)
-                    for name, shape in self.shapes.items()
-                }
-                with atp(self.model, noise, head_dim=128) as effects:
-                    out = self.model(inputs).logits
-                    out = self.output_func(out)
-                    # assert out.shape == (batch_size,), out.shape
-                    out.backward()
+        # Why shape[-2]? We are going to sum over the last dimension during attribution
+        # patching. We'll then use the second-to-last dimension as our main dimension
+        # to fit Gaussians to (all earlier dimensions will be summed out first).
+        # This is kind of arbitrary and we're putting the onus on the user to make
+        # sure this makes sense.
+        self._means = {
+            name: torch.zeros(32, device=device)
+            for name, shape in self.shapes.items()
+        }
+        self._Cs = {
+            name: torch.zeros(32, 32, device=device)
+            for name, shape in self.shapes.items()
+        }
+        self._n = 0
+        self._effects = {
+            name: torch.zeros(len(trusted_data), 32, device=device)
+            for name, shape in self.shapes.items()
+        }
 
-                self._n += batch_size
+        dataloader = torch.utils.data.DataLoader(trusted_data, batch_size=batch_size)
 
-                for name, effect in effects.items():
-                    effect = effect[:, -1]
-                    self._effects[name][i] = effect
-                    self._means[name], self._Cs[name], _ = (
-                        detectors.statistical.helpers.update_covariance(
-                            self._means[name], self._Cs[name], self._n, effect
-                        )
+        noise = self.get_noise_tensor(trusted_data, batch_size, device, dtype)
+
+        for i, batch in tqdm(enumerate(dataloader)):
+            inputs = utils.inputs_from_batch(batch)
+            with atp(self.model, noise, head_dim=128) as effects:
+                out = self.model(inputs).logits
+                out = self.output_func(out)
+                # assert out.shape == (batch_size,), out.shape
+                out.backward()
+
+            self._n += batch_size
+
+            for name, effect in effects.items():
+                effect = effect[:, -1]
+                self._effects[name][i] = effect
+                self._means[name], self._Cs[name], _ = (
+                    detectors.statistical.helpers.update_covariance(
+                        self._means[name], self._Cs[name], self._n, effect
                     )
+                )
 
-            self.post_train()
+        self.post_train()
+
+    def get_noise_tensor(self, trusted_data, batch_size, device, dtype, 
+                         subset_size=1000, activation_batch_size=16):
+        if self.ablation == 'mean':
+            indices = torch.randperm(len(trusted_data))[:subset_size]
+            subset = HuggingfaceDataset(
+                trusted_data.hf_dataset.select(indices),
+                text_key=trusted_data.text_key,
+                label_key=trusted_data.label_key
+            )
+
+            super().train(subset, None, batch_size=activation_batch_size)
+            mean_activation = {name: act.mean(dim=0)
+                               for name, act in self._activations.items()}
+            reshaped_mean_activation = {
+                name: mean_activation[name].view(1, *shape).expand(batch_size, -1, -1)
+                for name, shape in self.shapes.items()
+            }
+            return reshaped_mean_activation
+
+        elif self.ablation == 'zero':
+            return {
+                name: torch.zeros((batch_size, 1, *shape), device=device, 
+                                  dtype=dtype)
+                for name, shape in self.shapes.items()
+            }
+
+    def init_variables(self, activation_sizes: dict[str, torch.Size], device):
+        for k, size in activation_sizes.items():
+            if len(size) not in (1, 2):
+                raise ValueError(
+                    f"Activation size {size} of {k} is not supported. "
+                    "Activations must be either 1D or 2D (in which case separate "
+                    "covariance matrices are learned along the first dimension)."
+                )
+        self._activations = {
+            k: torch.zeros((self.data_size, size[-1]), device=device)
+            for k, size in activation_sizes.items()
+        }
+    
+    def batch_update(self, activations: dict[str, torch.Tensor]):
+        for k, activation in activations.items():
+            self._activations[k] = torch.cat([self._activations[k], activation], dim=0)
 
     def layerwise_scores(self, batch):
         inputs = utils.inputs_from_batch(batch)
@@ -243,8 +293,13 @@ class MahaAttributionDetector(AttributionDetector):
 
 
 class LOFAttributionDetector(AttributionDetector):
-    def __init__(self, shapes: dict[str, tuple[int, ...]], output_func, task, k):
-        super().__init__(shapes, output_func, task)
+    def __init__(
+            self, 
+            shapes: dict[str, tuple[int, ...]], 
+            output_func: Callable[[torch.Tensor], torch.Tensor],
+            k: int,
+            ablation: str = 'mean'):
+        super().__init__(shapes, output_func, ablation)
         self.k = k
 
     def post_train(self):
@@ -268,14 +323,14 @@ class LOFAttributionDetector(AttributionDetector):
 class IsoForestAttributionDetector(AttributionDetector):
 
     def post_train(self):
-        self.isoforest = {IsolationForest().fit(layer_effect) for layer_effect in self.effects.values()}
+        self.isoforest = {name: IsolationForest().fit(layer_effect.cpu().numpy()) for name, layer_effect in self._effects.items()}
 
     def distance_function(self, test_effects):
         distances: dict[str, torch.Tensor] = {}
 
         for name, layer_effects in test_effects.items():
 
-            distances[name] = -self.isoforest.decision_function(layer_effects, self.effects)
+            distances[name] = -self.isoforest[name].decision_function(layer_effects.cpu().numpy())
         
         return distances
 

@@ -46,6 +46,8 @@ class StatisticalDetector(ActivationBasedDetector, ABC):
                     )
                 data = untrusted_data
 
+            self.data_size = len(data)
+
             # No reason to shuffle, we're just computing statistics
             data_loader = DataLoader(data, batch_size=batch_size, shuffle=False)
             example_batch = next(iter(data_loader))

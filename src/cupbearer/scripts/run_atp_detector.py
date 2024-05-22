@@ -20,17 +20,35 @@ def main(detector_type, first_layer, last_layer, model_name, features, ablation,
 
         return probs[:, -1, effect_tokens].sum()
 
+    activation_processing_function = get_last_token_activation_function_for_task(task)
+
     if features == "attribution":
         batch_size = 1
         eval_batch_size = 1
-        layer_dict = {f"hf_model.base_model.model.model.layers.{layer}.self_attn.output": (4096,) for layer in layers}
+        layer_dict = {f"hf_model.base_model.model.model.layers.{layer}.self_attn": (4096,) for layer in layers}
 
         if detector_type == "mahalonobis":
-            detector = atp_detector.MahaAttributionDetector(layer_dict, effect_prob_func, ablation=ablation)
+            detector = atp_detector.MahaAttributionDetector(
+                layer_dict, 
+                effect_prob_func, 
+                ablation=ablation,
+                activation_processing_func=activation_processing_function
+                )
         elif detector_type == "isoforest":
-            detector = atp_detector.IsoForestAttributionDetector(layer_dict, effect_prob_func, ablation=ablation)
+            detector = atp_detector.IsoForestAttributionDetector(
+                layer_dict, 
+                effect_prob_func, 
+                ablation=ablation, 
+                activation_processing_func=activation_processing_function
+            )
         elif detector_type == "lof":
-            detector = atp_detector.LOFAttributionDetector(layer_dict, effect_prob_func, k=k, ablation=ablation)
+            detector = atp_detector.LOFAttributionDetector(
+                layer_dict, 
+                effect_prob_func, 
+                k=k, 
+                ablation=ablation, 
+                activation_processing_func=activation_processing_function
+            )
 
         emb = task.model.hf_model.get_input_embeddings()
         emb.requires_grad_(True)
@@ -43,7 +61,6 @@ def main(detector_type, first_layer, last_layer, model_name, features, ablation,
         layer_list = [f"hf_model.base_model.model.model.layers.{layer}.input_layernorm.input" for layer in layers]
 
         if detector_type == "mahalonobis":
-            activation_processing_function = get_last_token_activation_function_for_task(task)
             detector = detectors.MahalanobisDetector(
                             activation_names=layer_list,
                             activation_processing_func=activation_processing_function,
@@ -51,7 +68,6 @@ def main(detector_type, first_layer, last_layer, model_name, features, ablation,
         elif detector_type == "isoforest":
             raise NotImplementedError
         elif detector_type == "lof":
-            activation_processing_function = get_last_token_activation_function_for_task(task)
             detector = detectors.statistical.lof_detector.LOFDetector(
                             activation_names=layer_list,
                             activation_processing_func=activation_processing_function,

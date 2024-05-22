@@ -12,7 +12,7 @@ from sklearn.ensemble import IsolationForest
 import plotly.express as px
 import torch
 from cupbearer import detectors, tasks, utils, scripts
-from cupbearer.detectors.statistical.statistical import StatisticalDetector
+from cupbearer.detectors.statistical.statistical import ActivationCovarianceBasedDetector
 from cupbearer.data import HuggingfaceDataset
 from torch import Tensor, nn
 
@@ -114,22 +114,27 @@ def atp(model: nn.Module, noise_acts: dict[str, Tensor], *, head_dim: int = 0):
         # Clear grads on the model just to be safe
         model.zero_grad()
 
-class AttributionDetector(StatisticalDetector, ABC):
+class AttributionDetector(ActivationCovarianceBasedDetector, ABC):
     
     @abstractmethod
     def distance_function(self, effects: Tensor):
         pass
     
+    def post_covariance_training(self, **kwargs):
+        pass
+
     def __init__(
             self, 
             shapes: dict[str, tuple[int, ...]], 
             output_func: Callable[[torch.Tensor], torch.Tensor],
-            ablation: str = 'zero'):
+            ablation: str = 'zero',
+            activation_processing_func: Callable[[torch.Tensor, Any, str], torch.Tensor]
+            | None = None
+            ):
         
-        def identity_activation_func(activation, _, name):
-            return activation
+        activaton_names = [k+'.output' for k in shapes.keys()]
 
-        super().__init__(shapes.keys(), identity_activation_func)
+        super().__init__(activaton_names, activation_processing_func)
         self.shapes = shapes
         self.output_func = output_func
         self.ablation = ablation
@@ -145,6 +150,8 @@ class AttributionDetector(StatisticalDetector, ABC):
     ):
 
         assert trusted_data is not None
+
+        noise = self.get_noise_tensor(trusted_data, batch_size, device, dtype)
 
         dtype = self.model.hf_model.dtype
         device = self.model.hf_model.device
@@ -170,8 +177,6 @@ class AttributionDetector(StatisticalDetector, ABC):
 
         dataloader = torch.utils.data.DataLoader(trusted_data, batch_size=batch_size)
 
-        noise = self.get_noise_tensor(trusted_data, batch_size, device, dtype)
-
         for i, batch in tqdm(enumerate(dataloader)):
             inputs = utils.inputs_from_batch(batch)
             with atp(self.model, noise, head_dim=128) as effects:
@@ -183,6 +188,7 @@ class AttributionDetector(StatisticalDetector, ABC):
             self._n += batch_size
 
             for name, effect in effects.items():
+                # Get the effect at the last token
                 effect = effect[:, -1]
                 self._effects[name][i] = effect
                 self._means[name], self._Cs[name], _ = (
@@ -204,13 +210,7 @@ class AttributionDetector(StatisticalDetector, ABC):
             )
 
             super().train(subset, None, batch_size=activation_batch_size)
-            mean_activation = {name: act.mean(dim=0)
-                               for name, act in self._activations.items()}
-            reshaped_mean_activation = {
-                name: mean_activation[name].view(1, *shape).expand(batch_size, -1, -1)
-                for name, shape in self.shapes.items()
-            }
-            return reshaped_mean_activation
+            return self.mean
 
         elif self.ablation == 'zero':
             return {
@@ -218,23 +218,6 @@ class AttributionDetector(StatisticalDetector, ABC):
                                   dtype=dtype)
                 for name, shape in self.shapes.items()
             }
-
-    def init_variables(self, activation_sizes: dict[str, torch.Size], device):
-        for k, size in activation_sizes.items():
-            if len(size) not in (1, 2):
-                raise ValueError(
-                    f"Activation size {size} of {k} is not supported. "
-                    "Activations must be either 1D or 2D (in which case separate "
-                    "covariance matrices are learned along the first dimension)."
-                )
-        self._activations = {
-            k: torch.zeros((self.data_size, size[-1]), device=device)
-            for k, size in activation_sizes.items()
-        }
-    
-    def batch_update(self, activations: dict[str, torch.Tensor]):
-        for k, activation in activations.items():
-            self._activations[k] = torch.cat([self._activations[k], activation], dim=0)
 
     def layerwise_scores(self, batch):
         inputs = utils.inputs_from_batch(batch)
@@ -299,8 +282,11 @@ class LOFAttributionDetector(AttributionDetector):
             shapes: dict[str, tuple[int, ...]], 
             output_func: Callable[[torch.Tensor], torch.Tensor],
             k: int,
-            ablation: str = 'mean'):
-        super().__init__(shapes, output_func, ablation)
+            ablation: str = 'mean',
+            activation_processing_func: Callable[[torch.Tensor, Any, str], torch.Tensor]
+            | None = None
+            ):
+        super().__init__(shapes, output_func, ablation, activation_processing_func)
         self.k = k
 
     def post_train(self):

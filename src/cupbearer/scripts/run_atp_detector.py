@@ -5,10 +5,10 @@ from cupbearer.detectors.statistical import atp_detector
 from pathlib import Path
 from cupbearer.detectors.activations import get_last_token_activation_function_for_task
 
-def main(detector_type, first_layer, last_layer, model_name, features, ablation, k=20):
+def main(dataset, detector_type, first_layer, last_layer, model_name, features, ablation, k=20):
     layers = list(range(first_layer, last_layer + 1))
 
-    task = tasks.quirky_lm(include_untrusted=True, mixture=True, standardize_template=True)
+    task = tasks.quirky_lm(include_untrusted=True, mixture=True, standardize_template=True, dataset=dataset, random_names=True)
 
     no_token = task.model.tokenizer.encode(' No', add_special_tokens=False)[-1]
     yes_token = task.model.tokenizer.encode(' Yes', add_special_tokens=False)[-1]
@@ -27,7 +27,7 @@ def main(detector_type, first_layer, last_layer, model_name, features, ablation,
         eval_batch_size = 1
         layer_dict = {f"hf_model.base_model.model.model.layers.{layer}.self_attn": (4096,) for layer in layers}
 
-        if detector_type == "mahalonobis":
+        if detector_type == "mahalanobis":
             detector = atp_detector.MahaAttributionDetector(
                 layer_dict, 
                 effect_prob_func, 
@@ -60,20 +60,33 @@ def main(detector_type, first_layer, last_layer, model_name, features, ablation,
 
         layer_list = [f"hf_model.base_model.model.model.layers.{layer}.input_layernorm.input" for layer in layers]
 
-        if detector_type == "mahalonobis":
+        if detector_type == "mahalanobis":
             detector = detectors.MahalanobisDetector(
-                            activation_names=layer_list,
-                            activation_processing_func=activation_processing_function,
-                        )
+                activation_names=layer_list,
+                activation_processing_func=activation_processing_function,
+            )
         elif detector_type == "isoforest":
             raise NotImplementedError
         elif detector_type == "lof":
             detector = detectors.statistical.lof_detector.LOFDetector(
-                            activation_names=layer_list,
-                            activation_processing_func=activation_processing_function,
-                        )
+                activation_names=layer_list,
+                activation_processing_func=activation_processing_function,
+            )
+        elif detector_type == 'que':
+            detector = detectors.statistical.que_detector.QuantumEntropyDetector(
+                activation_names=layer_list,
+                activation_processing_func=activation_processing_function,
+            )
+        elif detector_type == 'spectral':
+            detector = detectors.statistical.spectral_detector.SpectralSignatureDetector(
+                activation_names=layer_list,
+                activation_processing_func=activation_processing_function,
+            )
 
-    save_path = f"logs/quirky/sciq-{detector_type}-{features}-{model_name}-{first_layer}-{last_layer}-{args.ablation}"
+    save_path = f"logs/quirky/{dataset}-{detector_type}-{features}-{model_name}-{first_layer}-{last_layer}-{args.ablation}"
+
+    if detector_type == "lof":
+        save_path += f"-{k}"
 
     if Path(save_path).exists():
         detector.load_weights(Path(save_path) / "detector")
@@ -82,7 +95,8 @@ def main(detector_type, first_layer, last_layer, model_name, features, ablation,
         scripts.train_detector(task, detector, 
                         batch_size=batch_size, 
                         save_path=save_path, 
-                        eval_batch_size=eval_batch_size)
+                        eval_batch_size=eval_batch_size,
+                        pbar=True)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Run ATP Detector")
@@ -92,7 +106,9 @@ if __name__ == '__main__':
     parser.add_argument('--last_layer', type=int, required=True, help='Last layer to use')
     parser.add_argument('--features', type=str, required=True, help='Features to use (attribution or activations)')
     parser.add_argument('--ablation', type=str, default='mean', help='Ablation to use (mean, zero)')
+    parser.add_argument('--dataset', type=str, default='sciq', help='Dataset to use (sciq, addition)')
+    parser.add_argument('--k', type=int, default=20, help='k to use for LOF')
 
     args = parser.parse_args()
-    main(args.detector_type, args.first_layer, args.last_layer, args.model_name, args.features, args.ablation)
+    main(args.dataset, args.detector_type, args.first_layer, args.last_layer, args.model_name, args.features, args.ablation, k=args.k)
 

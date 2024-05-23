@@ -18,7 +18,8 @@ def quirky_lm(
     device="cuda",
     include_untrusted: bool = False,
     fake_model: bool = False,
-    standardize_template: bool = False
+    standardize_template: bool = False,
+    dataset: str = "sciq"
 ):
     from elk_generalization.datasets.loader_utils import templatize_quirky_dataset
     from peft import AutoPeftModelForCausalLM
@@ -29,7 +30,15 @@ def quirky_lm(
 
     mixture_str = "mixture" if mixture else "fixed"
     name_str = "multiname" if random_names else "singlename"
-    model_name = f"ejenner/quirky_sciq_mistral7b_{mixture_str}_{name_str}"
+    model_name = f"EleutherAI/Mistral-7B-v0.1-{dataset}-random"
+
+    if standardize_template:
+        model_name += "-standardized"
+    if random_names:
+        model_name += "-random-names"
+
+    if dataset == 'sciq':
+        model_name = f"ejenner/quirky_sciq_mistral7b_{mixture_str}_{name_str}"        
 
     model = None
     tokenizer = None
@@ -42,9 +51,9 @@ def quirky_lm(
         tokenizer.pad_token_id = tokenizer.eos_token_id
         tokenizer.padding_side = "right"
 
-    dataset_name = "sciq"
+    dataset_name = dataset
 
-    if mixture:
+    if mixture and dataset == "sciq":
         raw_dataset = load_dataset(f"ejenner/quirky_{dataset_name}_raw")
     else:
         # The older non-mixture checkpoints from above where trained on a slightly

@@ -91,7 +91,6 @@ def atp(model: nn.Module, noise_acts: dict[str, Tensor], *, head_dim: int = 0):
     for name, module in model.named_modules():
         # Hooks need to be able to look up the name of a module
         mod_to_name[module] = name
-
         # Check if the module is in the paths
         for path, noise in noise_acts.items():
             if not name.endswith(path):
@@ -132,9 +131,9 @@ class AttributionDetector(ActivationCovarianceBasedDetector, ABC):
             | None = None
             ):
         
-        activaton_names = [k+'.output' for k in shapes.keys()]
+        activation_names = [k+'.output' for k in shapes.keys()]
 
-        super().__init__(activaton_names, activation_processing_func)
+        super().__init__(activation_names, activation_processing_func)
         self.shapes = shapes
         self.output_func = output_func
         self.ablation = ablation
@@ -151,10 +150,11 @@ class AttributionDetector(ActivationCovarianceBasedDetector, ABC):
 
         assert trusted_data is not None
 
-        noise = self.get_noise_tensor(trusted_data, batch_size, device, dtype)
-
         dtype = self.model.hf_model.dtype
         device = self.model.hf_model.device
+
+        with torch.no_grad():
+            noise = self.get_noise_tensor(trusted_data, batch_size, device, dtype)
 
         # Why shape[-2]? We are going to sum over the last dimension during attribution
         # patching. We'll then use the second-to-last dimension as our main dimension
@@ -210,7 +210,7 @@ class AttributionDetector(ActivationCovarianceBasedDetector, ABC):
             )
 
             super().train(subset, None, batch_size=activation_batch_size)
-            return self.mean
+            return {k.rstrip('.output'): v for k, v in self.means.items()}
 
         elif self.ablation == 'zero':
             return {

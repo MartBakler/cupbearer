@@ -112,6 +112,8 @@ class AnomalyDetector(ABC):
         )
 
         metrics = defaultdict(dict)
+        if save_path is not None:
+            model_name = Path(save_path).parts[-1]
         assert 0 < histogram_percentile <= 100
 
         if pbar:
@@ -175,7 +177,7 @@ class AnomalyDetector(ABC):
             ax.legend()
             ax.set_xlabel("Anomaly score")
             ax.set_ylabel("Frequency")
-            ax.set_title(f"Anomaly score distribution ({layer})")
+            ax.set_title(f"Anomaly score distribution ({layer})\n{model_name}")
             textstr = f"AUROC: {auc_roc:.1%}\n AP: {ap:.1%}"
             props = dict(boxstyle="round", facecolor="white")
             ax.text(

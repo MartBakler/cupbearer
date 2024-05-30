@@ -83,6 +83,27 @@ def main(dataset, detector_type, first_layer, last_layer, model_name, features, 
                 activation_processing_func=activation_processing_function,
             )
 
+    elif features == "trajectories":
+        
+        seq_len = 1 # Examine the trajectory for the last seq_len tokens
+        vocab_size = 320 # Consider the probabilites of the top vocab_size tokens
+
+        batch_size = 8
+        eval_batch_size = 8
+
+        if detector_type == "mahalanobis":
+            detector = detectors.statistical.trajectory_detector.MahaTrajectoryDetector(
+                layers,
+                vocab_size = vocab_size,
+                seq_len = seq_len
+            )
+        elif detector_type == "lof":
+            detector = detectors.statistical.trajectory_detector.LOFTrajectoryDetector(
+                layers,
+                vocab_size = vocab_size,
+                seq_len = seq_len
+            )
+
     save_path = f"logs/quirky/{dataset}-{detector_type}-{features}-{model_name}-{first_layer}-{last_layer}-{args.ablation}"
 
     if detector_type == "lof":
@@ -104,7 +125,7 @@ if __name__ == '__main__':
     parser.add_argument('--model_name', type=str, default='', help='Name of the detector to use')
     parser.add_argument('--first_layer', type=int, required=True, help='First layer to use')
     parser.add_argument('--last_layer', type=int, required=True, help='Last layer to use')
-    parser.add_argument('--features', type=str, required=True, help='Features to use (attribution or activations)')
+    parser.add_argument('--features', type=str, required=True, help='Features to use (attribution, trajectories or activations)')
     parser.add_argument('--ablation', type=str, default='mean', help='Ablation to use (mean, zero)')
     parser.add_argument('--dataset', type=str, default='sciq', help='Dataset to use (sciq, addition)')
     parser.add_argument('--k', type=int, default=20, help='k to use for LOF')

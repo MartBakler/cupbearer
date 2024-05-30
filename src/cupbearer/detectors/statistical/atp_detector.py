@@ -16,8 +16,6 @@ from cupbearer.detectors.statistical.statistical import ActivationCovarianceBase
 from cupbearer.data import HuggingfaceDataset
 from torch import Tensor, nn
 
-import pickle
-
 @contextmanager
 def atp(model: nn.Module, noise_acts: dict[str, Tensor], *, head_dim: int = 0):
     """Perform attribution patching on `model` with `noise_acts`.

@@ -114,13 +114,17 @@ def local_outlier_factor(
         batch_size = len(layer_activations)
         full_activations = torch.cat([layer_activations, saved_activations[name]], dim=0)
 
+        epsilon = 0.0001
         # Calculate pairwise squared Euclidean distances
-        test_dist = torch.cdist(full_activations, full_activations).fill_diagonal_(torch.inf)
+        test_dist = torch.cdist(full_activations, full_activations).fill_diagonal_(torch.inf) + epsilon
         test_distances, indices = test_dist.topk(k, largest=False)
 
         # Calculate reachability distances
         k_dists = test_distances[:, -1, None].expand_as(test_distances)
         lrd = torch.max(test_distances, k_dists).mean(dim=1).reciprocal()
+
+        # Assert finite valuesk
+        assert torch.isfinite(lrd).all()
 
         lrd_ratios = lrd[indices] / lrd[:, None]
         distances[name] = (lrd_ratios.sum(dim=1) / k)[:batch_size]

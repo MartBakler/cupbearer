@@ -8,3 +8,4 @@ from .atp_detector import (
     IsoForestAttributionDetector,
     LOFAttributionDetector
 )
+from .trajectory_detector import TrajectoryDetector

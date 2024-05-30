@@ -102,6 +102,8 @@ class AnomalyDetector(ABC):
         # when we assume that anomaly labels are included.
         assert isinstance(dataset, MixedData), type(dataset)
 
+        dataset.return_anomaly_agreement = True
+
         test_loader = DataLoader(
             dataset,
             batch_size=batch_size,
@@ -121,12 +123,13 @@ class AnomalyDetector(ABC):
 
         scores = defaultdict(list)
         labels = defaultdict(list)
+        agreement = defaultdict(list)
 
         # It's important we don't use torch.inference_mode() here, since we want
         # to be able to override this in certain detectors using torch.enable_grad().
         with torch.no_grad():
             for batch in test_loader:
-                inputs, new_labels = batch
+                inputs, new_labels, new_agreements = batch
                 if layerwise:
                     new_scores = self.layerwise_scores(inputs)
                 else:
@@ -137,8 +140,10 @@ class AnomalyDetector(ABC):
                     assert score.shape == new_labels.shape
                     scores[layer].append(score)
                     labels[layer].append(new_labels)
+                    agreement[layer].append(new_agreements)
         scores = {layer: np.concatenate(scores[layer]) for layer in scores}
         labels = {layer: np.concatenate(labels[layer]) for layer in labels}
+        agreement = {layer: np.concatenate(agreement[layer]) for layer in agreement}
 
         figs = {}
 
@@ -156,6 +161,32 @@ class AnomalyDetector(ABC):
             metrics[layer]["AUC_ROC"] = auc_roc
             metrics[layer]["AP"] = ap
 
+            auc_roc_agree = sklearn.metrics.roc_auc_score(
+                y_true=labels[layer][agreement[layer]],
+                y_score=scores[layer][agreement[layer]],
+            )
+            ap_agree = sklearn.metrics.average_precision_score(
+                y_true=labels[layer][agreement[layer]],
+                y_score=scores[layer][agreement[layer]],
+            )
+            logger.info(f"AUC_ROC_AGREE ({layer}): {auc_roc_agree:.4f}")
+            logger.info(f"AP_AGREE ({layer}): {ap_agree:.4f}")
+            metrics[layer]["AUC_ROC_AGREE"] = auc_roc_agree
+            metrics[layer]["AP_AGREE"] = ap_agree
+
+            auc_roc_disagree = sklearn.metrics.roc_auc_score(
+                y_true=labels[layer][~agreement[layer]],
+                y_score=scores[layer][~agreement[layer]],
+            )
+            ap_disagree = sklearn.metrics.average_precision_score(
+                y_true=labels[layer][~agreement[layer]],
+                y_score=scores[layer][~agreement[layer]],
+            )
+            logger.info(f"AUC_ROC_DISAGREE ({layer}): {auc_roc_disagree:.4f}")
+            logger.info(f"AP_DISAGREE ({layer}): {ap_disagree:.4f}")
+            metrics[layer]["AUC_ROC_DISAGREE"] = auc_roc_disagree
+            metrics[layer]["AP_DISAGREE"] = ap_disagree
+
             upper_lim = np.percentile(scores[layer], histogram_percentile).item()
             # Usually there aren't extremely low outliers, so we just use the minimum,
             # otherwise this tends to weirdly cut of the histogram.
@@ -166,14 +197,16 @@ class AnomalyDetector(ABC):
             # Visualizations for anomaly scores
             fig, ax = plt.subplots()
             for i, name in enumerate(["Normal", "Anomalous"]):
-                vals = scores[layer][labels[layer] == i]
-                ax.hist(
-                    vals,
-                    bins=bins,
-                    alpha=0.5,
-                    label=name,
-                    log=log_yaxis,
-                )
+                for j, agree_label in enumerate(["Disagree", "Agree"]):
+                    class_labels = labels[layer][agreement[layer] == j]
+                    vals = scores[layer][agreement[layer] == j][class_labels == i]
+                    ax.hist(
+                        vals,
+                        bins=bins,
+                        alpha=0.5,
+                        label=f"{name} {agree_label}",
+                        log=log_yaxis,
+                    )
             ax.legend()
             ax.set_xlabel("Anomaly score")
             ax.set_ylabel("Frequency")

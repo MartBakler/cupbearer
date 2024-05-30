@@ -27,11 +27,13 @@ class MixedData(Dataset):
         anomalous: Dataset,
         normal_weight: Optional[float] = 0.5,
         return_anomaly_labels: bool = True,
+        return_anomaly_agreement: bool = False,
     ):
         self.normal_data = normal
         self.anomalous_data = anomalous
         self.normal_weight = normal_weight
         self.return_anomaly_labels = return_anomaly_labels
+        self.return_anomaly_agreement = return_anomaly_agreement
         if normal_weight is None:
             self.normal_len = len(normal)
             self.anomalous_len = len(anomalous)
@@ -57,9 +59,13 @@ class MixedData(Dataset):
             )
         if index < self.normal_len:
             if self.return_anomaly_labels:
+                if self.return_anomaly_agreement:
+                    return self.normal_data[index], 0, self.normal_data.hf_dataset[index]['alice_label'] == self.normal_data.hf_dataset[index]['bob_label']
                 return self.normal_data[index], 0
             return self.normal_data[index]
         else:
             if self.return_anomaly_labels:
+                if self.return_anomaly_agreement:
+                    return self.anomalous_data[index - self.normal_len], 1, self.anomalous_data.hf_dataset[index - self.normal_len]['alice_label'] == self.anomalous_data.hf_dataset[index - self.normal_len]['bob_label']
                 return self.anomalous_data[index - self.normal_len], 1
             return self.anomalous_data[index - self.normal_len]

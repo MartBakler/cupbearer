@@ -195,9 +195,9 @@ class AnomalyDetector(ABC):
             bins = np.linspace(lower_lim, upper_lim, num_bins)
 
             # Visualizations for anomaly scores
-            fig, ax = plt.subplots()
-            for i, name in enumerate(["Normal", "Anomalous"]):
-                for j, agree_label in enumerate(["Disagree", "Agree"]):
+            for j, agree_label in enumerate(["Disagree", "Agree"]):
+                fig, ax = plt.subplots()
+                for i, name in enumerate(["Normal", "Anomalous"]):
                     class_labels = labels[layer][agreement[layer] == j]
                     vals = scores[layer][agreement[layer] == j][class_labels == i]
                     ax.hist(
@@ -207,26 +207,26 @@ class AnomalyDetector(ABC):
                         label=f"{name} {agree_label}",
                         log=log_yaxis,
                     )
-            ax.legend()
-            ax.set_xlabel("Anomaly score")
-            ax.set_ylabel("Frequency")
-            ax.set_title(f"Anomaly score distribution ({layer})\n{model_name}")
-            textstr = f"AUROC: {auc_roc:.1%}\n AP: {ap:.1%}"
-            props = dict(boxstyle="round", facecolor="white")
-            ax.text(
-                0.98,
-                0.80,
-                textstr,
-                transform=ax.transAxes,
-                fontsize=10,
-                verticalalignment="top",
-                horizontalalignment="right",
-                bbox=props,
-            )
-            figs[layer] = fig
+                ax.legend()
+                ax.set_xlabel("Anomaly score")
+                ax.set_ylabel("Frequency")
+                ax.set_title(f"Anomaly score distribution ({layer})\n{model_name}")
+                textstr = f"AUROC: {auc_roc:.1%}\n AP: {ap:.1%}"
+                props = dict(boxstyle="round", facecolor="white")
+                ax.text(
+                    0.98,
+                    0.80,
+                    textstr,
+                    transform=ax.transAxes,
+                    fontsize=10,
+                    verticalalignment="top",
+                    horizontalalignment="right",
+                    bbox=props,
+                )
+                figs[(layer, agree_label)] = fig
 
-        if not save_path:
-            return metrics, figs
+            if not save_path:
+                return metrics, figs
 
         save_path = Path(save_path)
 
@@ -238,7 +238,7 @@ class AnomalyDetector(ABC):
             json.dump(metrics, f)
 
         for layer, fig in figs.items():
-            fig.savefig(save_path / f"histogram_{layer}.pdf")
+            fig.savefig(save_path / f"histogram_{layer}_{agree_label}.pdf")
 
         return metrics, figs
 

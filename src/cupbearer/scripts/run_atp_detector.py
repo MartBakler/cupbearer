@@ -4,6 +4,9 @@ from cupbearer import detectors, tasks, utils, scripts
 from cupbearer.detectors.statistical import atp_detector
 from pathlib import Path
 from cupbearer.detectors.activations import get_last_token_activation_function_for_task
+from cupbearer.detectors.statistical.probe_detector import probe_error
+from cupbearer.detectors.statistical.helpers import mahalanobis_from_data, local_outlier_factor
+import gc
 
 def main(dataset, detector_type, first_layer, last_layer, model_name, features, ablation, k=20):
     layers = list(range(first_layer, last_layer + 1))
@@ -18,7 +21,7 @@ def main(dataset, detector_type, first_layer, last_layer, model_name, features, 
         assert logits.ndim == 3
         probs = logits.softmax(-1)
 
-        return probs[:, -1, effect_tokens].sum()
+        return probs[:, -1, effect_tokens].diff(1).sum()
 
     activation_processing_function = get_last_token_activation_function_for_task(task)
 
@@ -86,7 +89,6 @@ def main(dataset, detector_type, first_layer, last_layer, model_name, features, 
     elif features == "trajectories":
         
         seq_len = 1 # Examine the trajectory for the last seq_len tokens
-        vocab_size = 320 # Consider the probabilites of the top vocab_size tokens
 
         batch_size = 8
         eval_batch_size = 8
@@ -94,15 +96,45 @@ def main(dataset, detector_type, first_layer, last_layer, model_name, features, 
         if detector_type == "mahalanobis":
             detector = detectors.statistical.trajectory_detector.MahaTrajectoryDetector(
                 layers,
-                vocab_size = vocab_size,
                 seq_len = seq_len
             )
         elif detector_type == "lof":
             detector = detectors.statistical.trajectory_detector.LOFTrajectoryDetector(
                 layers,
-                vocab_size = vocab_size,
                 seq_len = seq_len
             )
+
+    elif features == "probe":
+ 
+        layer_dict = {f"hf_model.base_model.model.model.layers.{layer}.self_attn": (4096,) for layer in layers}
+
+        batch_size = 1
+        eval_batch_size = 1
+
+        if detector_type == "mahalanobis":
+            detector = detectors.statistical.probe_detector.AtPProbeDetector(
+            layer_dict,
+            seq_len = 1,
+            activation_processing_func=activation_processing_function,
+            distance_function=mahalanobis_from_data
+        )
+        elif detector_type == "lof":
+            detector = detectors.statistical.probe_detector.AtPProbeDetector(
+            layer_dict,
+            seq_len = 1,
+            activation_processing_func=activation_processing_function,
+            distance_function=local_outlier_factor
+        )
+        elif detector_type == "probe":
+            detector = detectors.statistical.probe_detector.AtPProbeDetector(
+            layer_dict,
+            seq_len = 1,
+            activation_processing_func=activation_processing_function,
+            distance_function=probe_error
+        )
+ 
+        emb = task.model.hf_model.get_input_embeddings()
+        emb.requires_grad_(True)
 
     save_path = f"logs/quirky/{dataset}-{detector_type}-{features}-{model_name}-{first_layer}-{last_layer}-{args.ablation}"
 
@@ -118,6 +150,9 @@ def main(dataset, detector_type, first_layer, last_layer, model_name, features, 
                         save_path=save_path, 
                         eval_batch_size=eval_batch_size,
                         pbar=True)
+    
+    del task, detector
+    gc.collect()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Run ATP Detector")
@@ -125,11 +160,16 @@ if __name__ == '__main__':
     parser.add_argument('--model_name', type=str, default='', help='Name of the detector to use')
     parser.add_argument('--first_layer', type=int, required=True, help='First layer to use')
     parser.add_argument('--last_layer', type=int, required=True, help='Last layer to use')
-    parser.add_argument('--features', type=str, required=True, help='Features to use (attribution, trajectories or activations)')
+    parser.add_argument('--features', type=str, required=True, help='Features to use (attribution, trajectories, probe or activations)')
     parser.add_argument('--ablation', type=str, default='mean', help='Ablation to use (mean, zero)')
     parser.add_argument('--dataset', type=str, default='sciq', help='Dataset to use (sciq, addition)')
     parser.add_argument('--k', type=int, default=20, help='k to use for LOF')
+    parser.add_argument('--sweep_layers', action='store_true', default=False, help='Sweep layers one by one')
 
     args = parser.parse_args()
-    main(args.dataset, args.detector_type, args.first_layer, args.last_layer, args.model_name, args.features, args.ablation, k=args.k)
+    if args.sweep_layers:
+        for layer in range(args.first_layer, args.last_layer + 1):
+            main(args.dataset, args.detector_type, layer, layer, args.model_name, args.features, args.ablation, k=args.k)
+    else:
+        main(args.dataset, args.detector_type, args.first_layer, args.last_layer, args.model_name, args.features, args.ablation, k=args.k)
 

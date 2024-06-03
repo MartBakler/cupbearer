@@ -37,9 +37,6 @@ def quirky_lm(
     if random_names:
         model_name += "-random-names"
 
-    # if dataset == 'sciq':
-    #     model_name = f"ejenner/quirky_sciq_mistral7b_{mixture_str}_{name_str}"        
-
     model = None
     tokenizer = None
     # We might not want to actually load a model if we're getting all activations
@@ -53,11 +50,6 @@ def quirky_lm(
 
     dataset_name = dataset
 
-    # if mixture and dataset == "sciq":
-    #     raw_dataset = load_dataset(f"ejenner/quirky_{dataset_name}_raw")
-    # else:
-        # The older non-mixture checkpoints from above where trained on a slightly
-        # different distribution---shouldn't matter much but we'll just use that.
     raw_dataset = load_dataset(f"EleutherAI/quirky_{dataset_name}_raw")
 
     dataset = templatize_quirky_dataset(

@@ -3,6 +3,9 @@ from typing import Optional
 import torch
 
 
+def concat_to_single_layer(activations: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    return {'all': torch.cat([v for k, v in activations.items()], dim=1)}
+
 def update_covariance(curr_mean, curr_C, curr_n, new_data):
     # Should be (batch, dim)
     assert new_data.ndim == 2
@@ -76,6 +79,11 @@ def mahalanobis(
         distances[k] = distance
     return distances
 
+def mahalanobis_from_data(test_data, saved_data):
+    saved_means = {k: v.mean(dim=0) for k, v in saved_data.items()}
+    saved_inv_covs = {k: torch.linalg.pinv(torch.cov(v.T), 1.e-5) for k, v in saved_data.items()}
+
+    return mahalanobis(test_data, saved_means, saved_inv_covs)
 
 def quantum_entropy(
     whitened_activations: dict[str, torch.Tensor],

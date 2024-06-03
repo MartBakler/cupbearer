@@ -9,3 +9,4 @@ from .atp_detector import (
     LOFAttributionDetector
 )
 from .trajectory_detector import TrajectoryDetector
+from .probe_detector import SimpleProbeDetector

@@ -147,12 +147,11 @@ class AttributionDetector(ActivationCovarianceBasedDetector, ABC):
     ):
 
         assert trusted_data is not None
-
         dtype = self.model.hf_model.dtype
         device = self.model.hf_model.device
 
         with torch.no_grad():
-            noise = self.get_noise_tensor(trusted_data, batch_size, device, dtype)
+            self.noise = self.get_noise_tensor(trusted_data, batch_size, device, dtype)
 
         # Why shape[-2]? We are going to sum over the last dimension during attribution
         # patching. We'll then use the second-to-last dimension as our main dimension
@@ -177,7 +176,7 @@ class AttributionDetector(ActivationCovarianceBasedDetector, ABC):
 
         for i, batch in tqdm(enumerate(dataloader)):
             inputs = utils.inputs_from_batch(batch)
-            with atp(self.model, noise, head_dim=128) as effects:
+            with atp(self.model, self.noise, head_dim=128) as effects:
                 out = self.model(inputs).logits
                 out = self.output_func(out)
                 # assert out.shape == (batch_size,), out.shape
@@ -220,13 +219,9 @@ class AttributionDetector(ActivationCovarianceBasedDetector, ABC):
     def layerwise_scores(self, batch):
         inputs = utils.inputs_from_batch(batch)
         batch_size = len(inputs)
-        noise = {
-            name: torch.zeros((batch_size, *shape), device="cuda")
-            for name, shape in self.shapes.items()
-        }
         # AnomalyDetector.eval() wraps everything in a no_grad block, need to undo that.
         with torch.enable_grad():
-            with atp(self.model, noise, head_dim=128) as effects:
+            with atp(self.model, self.noise, head_dim=128) as effects:
                 out = self.model(inputs).logits
                 out = self.output_func(out)
                 # assert out.shape == (batch_size,), out.shape
@@ -266,12 +261,14 @@ class MahaAttributionDetector(AttributionDetector):
     def _get_trained_variables(self, saving: bool = False):
         return{
             "means": self.means,
-            "inv_covariances": self.inv_covariances
+            "inv_covariances": self.inv_covariances,
+            "noise": self.noise
         }
 
     def _set_trained_variables(self, variables):
         self.means = variables["means"]
         self.inv_covariances = variables["inv_covariances"]
+        self.noise = variables["noise"]
 
 
 class LOFAttributionDetector(AttributionDetector):
@@ -300,10 +297,12 @@ class LOFAttributionDetector(AttributionDetector):
     def _get_trained_variables(self, saving: bool = False):
         return{
             "effects": self.effects,
+            "noise": self.noise
         }
 
     def _set_trained_variables(self, variables):
         self.effects = variables["effects"]
+        self.noise = variables["noise"]
 
 class IsoForestAttributionDetector(AttributionDetector):
 
@@ -321,8 +320,10 @@ class IsoForestAttributionDetector(AttributionDetector):
 
     def _get_trained_variables(self, saving: bool = False):
         return{
-            "isoforest": self.isoforest
+            "isoforest": self.isoforest,
+            "noise": self.noise
         }
 
     def _set_trained_variables(self, variables):
         self.isoforest = variables["isoforest"]
+        self.noise = variables["noise"]

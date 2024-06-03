@@ -8,20 +8,23 @@ from cupbearer import utils
 import pdb
 from pathlib import Path
 import gc
+from abc import ABC, abstractmethod
 
-from cupbearer.detectors.statistical.helpers import local_outlier_factor, mahalanobis
+from cupbearer.detectors.statistical.helpers import local_outlier_factor, mahalanobis_from_data
 from cupbearer.detectors.statistical.statistical import StatisticalDetector
 
-
-class TrajectoryDetector(StatisticalDetector):
+class TrajectoryDetector(StatisticalDetector, ABC):
     """Generic abstract detector that records prediction trajectories from a tuned lens."""
+    @abstractmethod
+    def layerwise_scores(self, batch) -> dict[str, torch.Tensor]:
+        pass
+
     def __init__(
             self, 
             layers: list[int], 
             lens_dir: str = Path('/mnt/ssd-1/nora/tuned-lens/mistral'),
             base_model_name: str = "mistralai/Mistral-7B-v0.1",
-            vocab_size: int = 320,
-            seq_len: int = 15
+            seq_len: int = 15,
             ):
         super().__init__([])
         base_model = AutoModelForCausalLM.from_pretrained(base_model_name)
@@ -68,7 +71,7 @@ class TrajectoryDetector(StatisticalDetector):
 
     def get_activations(self, batch) -> dict[str, torch.Tensor]:
         inputs = utils.inputs_from_batch(batch)
-        final_tokens = slice(-self.seq_len, None)
+        selected_tokens = slice(-self.seq_len, None)
         prediction_trajectories = torch.zeros((len(inputs), self.lens.config.num_hidden_layers + 1, self.seq_len * self.tokenizer.vocab_size))
 
         for i, inp_id in enumerate(inputs):
@@ -78,7 +81,7 @@ class TrajectoryDetector(StatisticalDetector):
                 self.model.hf_model,
                 tokenizer=self.tokenizer,
                 input_ids=tokenized_input,
-            ).slice_sequence(final_tokens).log_probs).reshape(self.lens.config.num_hidden_layers + 1, self.seq_len * self.tokenizer.vocab_size)
+            ).slice_sequence(selected_tokens).log_probs).reshape(self.lens.config.num_hidden_layers + 1, self.seq_len * self.tokenizer.vocab_size)
 
             assert torch.isnan(prediction_trajectory).any() == False
 
@@ -87,30 +90,6 @@ class TrajectoryDetector(StatisticalDetector):
         trajectory_dict = {k: prediction_trajectories[:, k] for k in self.layers}
 
         return trajectory_dict
-
-    def layerwise_scores(self, batch) -> dict[str, torch.Tensor]:
-        test_trajectories = self.get_activations(batch)
-        batch_size = next(iter(test_trajectories.values())).shape[0]
-
-        # Reshape activations to (batch, dim) for computing distances
-        for k, test_trajectory in test_trajectories.items():
-            test_trajectories[k] = test_trajectory.reshape(batch_size, self.seq_len, self.tokenizer.vocab_size).index_select(2, self.vocab).reshape(batch_size, self.seq_len * self.vocab_size)
-
-            assert torch.isnan(test_trajectory).any() == False
-
-        distances = local_outlier_factor(
-            test_trajectories,
-            {k: v.reshape(-1, self.seq_len, self.tokenizer.vocab_size).index_select(2, self.vocab).reshape(-1, self.seq_len * self.vocab_size)
-             for k, v in self.trajectories.items()},
-        )
-
-        for k, v in distances.items():
-            # Unflatten distances so we can take the mean over the independent axis
-            distances[k] = rearrange(
-                v, "(batch independent) -> batch independent", batch=batch_size
-            ).mean(dim=1)
-
-        return distances
 
     def _get_trained_variables(self, saving: bool = False):
         return{
@@ -151,22 +130,15 @@ class MahaTrajectoryDetector(TrajectoryDetector):
         test_trajectories = self.get_activations(batch)
         batch_size = next(iter(test_trajectories.values())).shape[0]
 
-        trajectory_means = {k: v.reshape(-1, self.seq_len, self.tokenizer.vocab_size).index_select(2, self.vocab).reshape(-1, self.seq_len * self.vocab_size).mean(dim=0) 
-                            for k, v in self.trajectories.items()}
-        trajectory_inv_covs = {k: torch.linalg.pinv(torch.cov(v.reshape(-1, self.seq_len, self.tokenizer.vocab_size).index_select(2, self.vocab).reshape(-1, self.seq_len * self.vocab_size).T), 1.e-5) 
-                               for k, v in self.trajectories.items()}
-
         # Select just the tokens on interest in the vocab
         for k, test_trajectory in test_trajectories.items():
             test_trajectories[k] = test_trajectory.reshape(batch_size, self.seq_len, self.tokenizer.vocab_size).index_select(2, self.vocab).reshape(batch_size, self.seq_len * self.vocab_size)
 
             assert torch.isnan(test_trajectory).any() == False
-
-        distances = mahalanobis(
-            test_trajectories,
-            trajectory_means,
-            trajectory_inv_covs
-        )
+        learned_trajectories = {k: v.reshape(-1, self.seq_len, self.tokenizer.vocab_size).index_select(2, self.vocab).reshape(-1, self.seq_len * self.vocab_size)
+             for k, v in self.trajectories.items()}
+        
+        distances = mahalanobis_from_data(test_trajectories, learned_trajectories)
 
         for k, v in distances.items():
             # Unflatten distances so we can take the mean over the independent axis

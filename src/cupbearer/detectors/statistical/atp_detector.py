@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, Any
+from typing import Callable, Any, Tuple, Dict
 
 import pdb
 
@@ -13,11 +13,13 @@ import plotly.express as px
 import torch
 from cupbearer import detectors, tasks, utils, scripts
 from cupbearer.detectors.statistical.statistical import ActivationCovarianceBasedDetector
-from cupbearer.data import HuggingfaceDataset
+from cupbearer.data import HuggingfaceDataset, MixedData
 from torch import Tensor, nn
+from datasets import concatenate_datasets
+
 
 @contextmanager
-def atp(model: nn.Module, noise_acts: dict[str, Tensor], *, head_dim: int = 0):
+def atp(model: nn.Module, noise_acts: Dict[str, Tensor] | Dict[str, Tuple[Tensor, Tensor]], *, head_dim: int = 0):
     """Perform attribution patching on `model` with `noise_acts`.
 
     This function adds forward and backward hooks to submodules of `model`
@@ -49,14 +51,14 @@ def atp(model: nn.Module, noise_acts: dict[str, Tensor], *, head_dim: int = 0):
 
     # Keep track of activations from the forward pass
     mod_to_clean: dict[nn.Module, Tensor] = {}
-    mod_to_noise: dict[nn.Module, Tensor] = {}
+    mod_to_noise: dict[nn.Module, Tensor] | dict[nn.Module, Tuple[Tensor, Tensor]] = {}
 
     # Dictionary of effects
     effects: dict[str, Tensor] = {}
     mod_to_name: dict[nn.Module, str] = {}
 
     # Backward hook
-    def bwd_hook(module: nn.Module, _, grad_output: tuple[Tensor, ...] | Tensor):
+    def bwd_hook(module: nn.Module, grad_input: tuple[Tensor, ...] | Tensor, grad_output: tuple[Tensor, ...] | Tensor):
         # Unpack the gradient output if it's a tuple
         if isinstance(grad_output, tuple):
             grad_output, *_ = grad_output
@@ -64,8 +66,19 @@ def atp(model: nn.Module, noise_acts: dict[str, Tensor], *, head_dim: int = 0):
         # Use pop() to ensure we don't use the same activation multiple times
         # and to save memory
         clean = mod_to_clean.pop(module)
-        direction = mod_to_noise[module] - clean
 
+        # If noise is tensor, replace acts with noise
+        if isinstance(mod_to_noise[module], Tensor):
+            # Unsqueeze noise at the sequence dimension
+            noise = mod_to_noise[module].unsqueeze(1)
+        # If noise is tuple, orthogonally project acts to noise
+        elif isinstance(mod_to_noise[module], Tuple):
+            noise = (mod_to_noise[module][0].unsqueeze(1)
+                     - torch.linalg.vecdot(mod_to_noise[module][0].unsqueeze(1), clean.unsqueeze(1)).unsqueeze(3) * mod_to_noise[module][0].unsqueeze(1)
+                     + (mod_to_noise[module][1].unsqueeze(-1) * mod_to_noise[module][0]).unsqueeze(1))
+
+        # Unsqueeze clean at noise batch dimension
+        direction = noise - clean.unsqueeze(1)
         # Group heads together if applicable
         if head_dim > 0:
             direction = direction.unflatten(-1, (-1, head_dim))
@@ -73,13 +86,12 @@ def atp(model: nn.Module, noise_acts: dict[str, Tensor], *, head_dim: int = 0):
 
         # Batched dot product
         effect = torch.linalg.vecdot(direction, grad_output.type_as(direction))
-
         # Save the effect
         name = mod_to_name[module]
         effects[name] = effect
 
     # Forward hook
-    def fwd_hook(module: nn.Module, _, output: tuple[Tensor, ...] | Tensor):
+    def fwd_hook(module: nn.Module, input: tuple[Tensor] | Tensor, output: tuple[Tensor, ...] | Tensor):
         # Unpack the output if it's a tuple
         if isinstance(output, tuple):
             output, *_ = output
@@ -126,13 +138,15 @@ class AttributionDetector(ActivationCovarianceBasedDetector, ABC):
             output_func: Callable[[torch.Tensor], torch.Tensor],
             ablation: str = 'zero',
             activation_processing_func: Callable[[torch.Tensor, Any, str], torch.Tensor]
-            | None = None
+            | None = None,
+            n_pcs: int = 10
             ):
         
         activation_names = [k+'.output' for k in shapes.keys()]
 
         super().__init__(activation_names, activation_processing_func)
         self.shapes = shapes
+        self.n_pcs = n_pcs
         self.output_func = output_func
         self.ablation = ablation
 
@@ -158,17 +172,23 @@ class AttributionDetector(ActivationCovarianceBasedDetector, ABC):
         # to fit Gaussians to (all earlier dimensions will be summed out first).
         # This is kind of arbitrary and we're putting the onus on the user to make
         # sure this makes sense.
+
+        self._n = 0
+        if self.ablation == 'pcs':
+            noise_batch_size = self.noise[list(self.noise.keys())[0]][0].shape[0]
+        else:
+            noise_batch_size = self.noise[list(self.noise.keys())[0]].shape[0]
+        
+        self._effects = {
+            name: torch.zeros(len(trusted_data), noise_batch_size * 32, device=device)
+            for name, shape in self.shapes.items()
+        }
         self._means = {
-            name: torch.zeros(32, device=device)
+            name: torch.zeros(noise_batch_size * 32, device=device)
             for name, shape in self.shapes.items()
         }
         self._Cs = {
-            name: torch.zeros(32, 32, device=device)
-            for name, shape in self.shapes.items()
-        }
-        self._n = 0
-        self._effects = {
-            name: torch.zeros(len(trusted_data), 32, device=device)
+            name: torch.zeros(noise_batch_size * 32, noise_batch_size * 32, device=device)
             for name, shape in self.shapes.items()
         }
 
@@ -186,7 +206,9 @@ class AttributionDetector(ActivationCovarianceBasedDetector, ABC):
 
             for name, effect in effects.items():
                 # Get the effect at the last token
-                effect = effect[:, -1]
+                effect = effect[:, :, -1]
+                # Merge the last dimensions
+                effect = effect.reshape(batch_size, -1)
                 self._effects[name][i] = effect
                 self._means[name], self._Cs[name], _ = (
                     detectors.statistical.helpers.update_covariance(
@@ -207,7 +229,19 @@ class AttributionDetector(ActivationCovarianceBasedDetector, ABC):
             )
 
             super().train(subset, None, batch_size=activation_batch_size)
-            return {k.rstrip('.output'): v for k, v in self.means.items()}
+            return {k.replace('.output', ''): v.unsqueeze(0) for k, v in self.means.items()}
+
+        elif self.ablation == 'pcs':
+            super().train(trusted_data, None, batch_size=activation_batch_size)
+            pcs = {}
+            for k, C in self.covariances.items():
+                eigenvalues, eigenvectors = torch.linalg.eigh(C)
+                sorted_indices = eigenvalues.argsort(descending=True)
+                principal_components = eigenvectors[:, sorted_indices[:self.n_pcs]]
+                principal_components /= torch.norm(principal_components, dim=0)
+                mean_activations = torch.matmul(principal_components.T, self._means[k])
+                pcs[k.replace('.output', '')] = (principal_components.T, mean_activations)
+            return pcs
 
         elif self.ablation == 'zero':
             return {
@@ -229,7 +263,7 @@ class AttributionDetector(ActivationCovarianceBasedDetector, ABC):
                 # self.sample_grad_func(inputs)
 
         for name, effect in effects.items():
-            effects[name] = effect[:, -1]
+            effects[name] = effect[:, :, -1].reshape(batch_size, -1)
 
         distances = self.distance_function(
             effects)    
@@ -241,33 +275,33 @@ class AttributionDetector(ActivationCovarianceBasedDetector, ABC):
 
 class MahaAttributionDetector(AttributionDetector):
     def post_train(self):
-        self.means = self._means
-        self.covariances = {k: C / (self._n - 1) for k, C in self._Cs.items()}
-        if any(torch.count_nonzero(C) == 0 for C in self.covariances.values()):
+        self.att_means = self._means
+        self.att_covariances = {k: C / (self._n - 1) for k, C in self._Cs.items()}
+        if any(torch.count_nonzero(C) == 0 for C in self.att_covariances.values()):
             raise RuntimeError("All zero covariance matrix detected.")
 
-        self.inv_covariances = {
+        self.att_inv_covariances = {
             k: detectors.statistical.mahalanobis_detector._pinv(C, rcond=1e-5)
-            for k, C in self.covariances.items()
+            for k, C in self.att_covariances.items()
         }
 
     def distance_function(self, effects):
         return detectors.statistical.helpers.mahalanobis(
             effects,
-            self.means,
-            self.inv_covariances,
+            self.att_means,
+            self.att_inv_covariances,
         )
 
     def _get_trained_variables(self, saving: bool = False):
         return{
-            "means": self.means,
-            "inv_covariances": self.inv_covariances,
+            "means": self.att_means,
+            "inv_covariances": self.att_inv_covariances,
             "noise": self.noise
         }
 
     def _set_trained_variables(self, variables):
-        self.means = variables["means"]
-        self.inv_covariances = variables["inv_covariances"]
+        self.att_means = variables["means"]
+        self.att_inv_covariances = variables["inv_covariances"]
         self.noise = variables["noise"]
 
 
@@ -327,3 +361,24 @@ class IsoForestAttributionDetector(AttributionDetector):
     def _set_trained_variables(self, variables):
         self.isoforest = variables["isoforest"]
         self.noise = variables["noise"]
+
+class ContrastProbeAttributionDetector(AttributionDetector):
+    def __init__(
+            self, 
+            shapes: dict[str, tuple[int, ...]], 
+            output_func: Callable[[torch.Tensor], torch.Tensor],
+            k: int,
+            ablation: str = 'mean',
+            activation_processing_func: Callable[[torch.Tensor, Any, str], torch.Tensor]
+            | None = None
+            ):
+        super().__init__(shapes, output_func, ablation, activation_processing_func)
+        self.k = k
+
+    def _get_trained_variables(self, saving: bool = False):
+        return{
+            "classifier": self.classifier
+        }
+    
+    def _set_trained_variables(self, variables):
+        self.classifier = variables["classifier"]

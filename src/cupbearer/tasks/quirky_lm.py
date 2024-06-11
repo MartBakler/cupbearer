@@ -4,7 +4,7 @@ from transformers import AutoTokenizer
 
 from cupbearer.data import HuggingfaceDataset
 from cupbearer.models import HuggingfaceLM
-
+import pdb
 from .task import Task
 
 
@@ -21,7 +21,7 @@ def quirky_lm(
     standardize_template: bool = False,
     dataset: str = "sciq"
 ):
-    from elk_generalization.datasets.loader_utils import templatize_quirky_dataset
+    from elk_generalization.datasets.loader_utils import templatize_quirky_dataset, ALICE_NAMES, BOB_NAMES
     from peft import AutoPeftModelForCausalLM
 
     ########################
@@ -35,7 +35,7 @@ def quirky_lm(
     if standardize_template:
         model_name += "-standardized"
     if random_names:
-        model_name += "-random-names"
+        model_name += "-many-random-names"
 
     model = None
     tokenizer = None
@@ -67,7 +67,7 @@ def quirky_lm(
     if random_names:
         # True samples with other Alice-like names:
         alice_test = dataset["validation"].filter(
-            lambda x: "Alice" not in x["statement"] and x["character"] == "Alice"
+            lambda x: all(name not in x["statement"] for name in ALICE_NAMES[:4]) and x["character"] == "Alice"
         )
     else:
         alice_test = dataset["validation"].filter(lambda x: x["character"] == "Alice")
@@ -76,7 +76,7 @@ def quirky_lm(
         # If include_untrusted is False, we can just use all Bob samples since training
         # data won't have included any Bob-like names.
         bob_test = dataset["validation"].filter(
-            lambda x: "Bob" not in x["statement"] and x["character"] == "Bob"
+            lambda x: all(name not in x["statement"] for name in BOB_NAMES[:4]) and x["character"] == "Bob"
         )
     else:
         bob_test = dataset["validation"].filter(lambda x: x["character"] == "Bob")
@@ -85,7 +85,7 @@ def quirky_lm(
     # Create training data
     ########################
 
-    alice = dataset["train"].filter(lambda x: "Alice" in x["statement"])
+    alice = dataset["train"].filter(lambda x: any(name in x["statement"] for name in ALICE_NAMES[:4]) and x["character"] == "Alice")
 
     # If we're using untrusted data, we need to split off some of the Alice data
     # into untrusted data, and also use Bob training data.

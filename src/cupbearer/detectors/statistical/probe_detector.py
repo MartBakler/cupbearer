@@ -18,7 +18,8 @@ from cupbearer.detectors.statistical.atp_detector import AttributionDetector
 from cupbearer.detectors.statistical.atp_detector import atp
 
 def probe_error(test_features, learned_features):
-    return {k: torch.quantile(v.abs(), 0.9, dim=1) for k, v in test_features.items()}
+    pdb.set_trace()
+    return {k: v.abs().topk(max(1, int(0.01 * v.size(1))), dim=1).values.mean(dim=1) for k, v in test_features.items()}
 
 class SimpleProbeDetector(TrajectoryDetector):
     """Detects anomalous examples if the probabilities of '_Yes' and '_No' tokens differ between the middle and the output."""
@@ -91,7 +92,8 @@ class AtPProbeDetector(AttributionDetector):
             seq_len: int = 1,
             activation_processing_func: Callable[[torch.Tensor, Any, str], torch.Tensor]
             | None = None,
-            distance_function: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] = probe_error
+            distance_function: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] = probe_error,
+            ablation: str = 'mean'
             ):
         # Hardcoded for now, we want to select multiple eventually
         self.layers = [26]
@@ -103,7 +105,7 @@ class AtPProbeDetector(AttributionDetector):
         del base_model
         gc.collect()
 
-        super().__init__(shapes, lambda x: x, ablation = 'mean', activation_processing_func=activation_processing_func)
+        super().__init__(shapes, lambda x: x, ablation=ablation, activation_processing_func=activation_processing_func)
 
         # Ensure the vocab is ['_Yes', '_No']   
         tokens_for_vocab = ["Yes", "No"]
@@ -134,14 +136,19 @@ class AtPProbeDetector(AttributionDetector):
         # This is kind of arbitrary and we're putting the onus on the user to make
         # sure this makes sense.
 
-        self._effects = {
-            k: torch.zeros(len(trusted_data), 32, device=device)
-            for k in self.shapes.keys()
-        }
-        self._effects['out'] = torch.zeros(len(trusted_data), 1, device=device)
-
         with torch.no_grad():
             self.noise = self.get_noise_tensor(trusted_data, batch_size, device, dtype)
+
+        if self.ablation == 'pcs':
+            noise_batch_size = self.noise[list(self.noise.keys())[0]][0].shape[0]
+        else:
+            noise_batch_size = self.noise[list(self.noise.keys())[0]].shape[0]
+        
+        self._effects = {
+            name: torch.zeros(len(trusted_data), noise_batch_size * 32, device=device)
+            for name, shape in self.shapes.items()
+        }
+        self._effects['out'] = torch.zeros(len(trusted_data), 1, device=device)
 
         dataloader = torch.utils.data.DataLoader(trusted_data, batch_size=batch_size)
 
@@ -163,8 +170,10 @@ class AtPProbeDetector(AttributionDetector):
 
             for name, effect in effects.items():
                 # Get the effect at the last token
-                effect = effect[:, -1]
-                probe_effect = probe_effects[name][:, -1]
+                effect = effect[:, :, -1]
+                # Merge the last dimensions
+                effect = effect.reshape(batch_size, -1)
+                probe_effect = probe_effects[name][:, :, -1].reshape(batch_size, -1)
                 self._effects[name][i: i + len(batch[0])] = effect - probe_effect
 
         self.post_train()
@@ -177,6 +186,7 @@ class AtPProbeDetector(AttributionDetector):
         test_features = defaultdict(lambda: torch.empty((len(batch), 1)))
         self.model.hf_model.config.output_hidden_states = True
         self.lens.to(self.model.hf_model.device)
+        batch_size = len(batch[0])
 
         with torch.enable_grad():
             with atp(self.model, self.noise, head_dim=128) as effects:
@@ -195,8 +205,8 @@ class AtPProbeDetector(AttributionDetector):
 
         for name, effect in effects.items():
             # Get the effect at the last token
-            effect = effect[:, -1]
-            probe_effect = probe_effects[name][:, -1]
+            effect = effect[:, :, -1].reshape(batch_size, -1)
+            probe_effect = probe_effects[name][:, :, -1].reshape(batch_size, -1)
             effect_diff = effect - probe_effect
             test_features[name] = effect_diff
 
@@ -222,3 +232,4 @@ class AtPProbeDetector(AttributionDetector):
     def _set_trained_variables(self, variables):
         self.effects = variables["effects"]
         self.noise = variables["noise"]
+

@@ -116,25 +116,46 @@ def main(dataset, detector_type, first_layer, last_layer, model_name, features, 
             layer_dict,
             seq_len = 1,
             activation_processing_func=activation_processing_function,
-            distance_function=mahalanobis_from_data
+            distance_function=mahalanobis_from_data,
+            ablation=ablation
         )
         elif detector_type == "lof":
             detector = detectors.statistical.probe_detector.AtPProbeDetector(
             layer_dict,
             seq_len = 1,
             activation_processing_func=activation_processing_function,
-            distance_function=local_outlier_factor
+            distance_function=local_outlier_factor,
+            ablation=ablation
         )
         elif detector_type == "probe":
             detector = detectors.statistical.probe_detector.AtPProbeDetector(
             layer_dict,
             seq_len = 1,
             activation_processing_func=activation_processing_function,
-            distance_function=probe_error
+            distance_function=probe_error,
+            ablation=ablation
         )
  
         emb = task.model.hf_model.get_input_embeddings()
         emb.requires_grad_(True)
+
+    elif features == "misconception-contrast":
+
+        batch_size = 4
+        eval_batch_size = 4
+
+        layer_list = [f"hf_model.base_model.model.model.layers.{layer}.input_layernorm.input" for layer in layers]
+
+        detector = detectors.statistical.MisconceptionContrastDetector(
+            layer_list,
+            activation_processing_func=activation_processing_function,
+        )
+    
+    elif features == "iterative-rephrase":
+        batch_size = 32
+        eval_batch_size = 32
+
+        detector = detectors.IterativeAnomalyDetector()
 
     save_path = f"logs/quirky/{dataset}-{detector_type}-{features}-{model_name}-{first_layer}-{last_layer}-{args.ablation}"
 
@@ -161,7 +182,7 @@ if __name__ == '__main__':
     parser.add_argument('--first_layer', type=int, required=True, help='First layer to use')
     parser.add_argument('--last_layer', type=int, required=True, help='Last layer to use')
     parser.add_argument('--features', type=str, required=True, help='Features to use (attribution, trajectories, probe or activations)')
-    parser.add_argument('--ablation', type=str, default='mean', help='Ablation to use (mean, zero)')
+    parser.add_argument('--ablation', type=str, default='mean', help='Ablation to use (mean, zero, pcs)')
     parser.add_argument('--dataset', type=str, default='sciq', help='Dataset to use (sciq, addition)')
     parser.add_argument('--k', type=int, default=20, help='k to use for LOF')
     parser.add_argument('--sweep_layers', action='store_true', default=False, help='Sweep layers one by one')

@@ -1,7 +1,7 @@
 # ruff: noqa: F401
 from .abstraction import AbstractionDetector
 from .activation_based import ActivationBasedDetector, ActivationCache, CacheBuilder
-from .anomaly_detector import AnomalyDetector
+from .anomaly_detector import AnomalyDetector, IterativeAnomalyDetector
 from .finetuning import FinetuningAnomalyDetector
 from .statistical import (
     MahalanobisDetector,

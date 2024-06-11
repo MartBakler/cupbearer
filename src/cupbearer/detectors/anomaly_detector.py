@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from contextlib import contextmanager
 from pathlib import Path
+import pdb
 
 import numpy as np
 import sklearn.metrics
@@ -161,6 +162,14 @@ class AnomalyDetector(ABC):
             metrics[layer]["AUC_ROC"] = auc_roc
             metrics[layer]["AP"] = ap
 
+            # Calculate the number of negative examples to filter to catch all positives
+            sorted_indices = np.argsort(scores[layer])[::-1]
+            sorted_labels = labels[layer][sorted_indices]
+            cut_point = np.where(sorted_labels == 1)[0][-1] + 1
+            num_negatives = np.sum(labels[layer][:cut_point]==0)
+            logger.info(f"Perfect filter remainder ({layer}): {1 - num_negatives/np.sum(labels[layer]==0)}")
+            metrics[layer]["Perfect_filter_remainder"] = 1 - num_negatives/np.sum(labels[layer]==0)
+
             auc_roc_agree = sklearn.metrics.roc_auc_score(
                 y_true=labels[layer][agreement[layer]],
                 y_score=scores[layer][agreement[layer]],
@@ -295,3 +304,61 @@ class AnomalyDetector(ABC):
     def load_weights(self, path: str | Path):
         logger.info(f"Loading detector from {path}")
         self._set_trained_variables(utils.load(path))
+
+
+class IterativeAnomalyDetector(AnomalyDetector):
+    def train(
+        self,
+        trusted_data: Dataset | None,
+        untrusted_data: Dataset | None,
+        save_path: Path | str | None,
+        **kwargs,
+    ):
+        pass
+
+    def layerwise_scores(self, batch) -> dict[str, torch.Tensor]:
+        raise NotImplementedError('This detector calculates scores directly')
+    
+    def scores(self, batch) -> torch.Tensor:
+        inputs = utils.inputs_from_batch(batch)
+        encoding = self.model.tokenize(inputs)
+        input_ids = encoding['input_ids']
+        mask = encoding['attention_mask']
+
+        # Get logits for 'No' and 'Yes' tokens
+        no_token = self.model.tokenizer.encode(' No', add_special_tokens=False)[-1]
+        yes_token = self.model.tokenizer.encode(' Yes', add_special_tokens=False)[-1]
+        effect_tokens = torch.tensor([no_token, yes_token], dtype=torch.long, device=input_ids.device)
+
+        # Perform a forward pass to get logits at the last non-padded position
+        logits = self.model(inputs).logits[..., effect_tokens][range(len(inputs)), mask.sum(dim=1) - 1]
+        # Determine the lower and higher logit tokens
+        lower_logit_indices = logits.argmin(dim=1)
+        higher_logit_indices = 1 - lower_logit_indices  # Since there are only two tokens, this will select the other token
+
+        # Extract the corresponding logits
+        lower_logits = logits.gather(1, lower_logit_indices.unsqueeze(-1)).squeeze(-1)
+        higher_logits = logits.gather(1, higher_logit_indices.unsqueeze(-1)).squeeze(-1)
+
+        # Modify the batch prompts with the lower logit token text
+        lower_logit_tokens = self.model.tokenizer.convert_ids_to_tokens(effect_tokens[lower_logit_indices])
+        modified_prompts = [prompt + f'\n\n One possible answer is "{token}"\n\n Is the statement factually correct?' 
+                            for prompt, token in zip(inputs, lower_logit_tokens)]
+
+        # Encode the modified prompts
+        modified_encoding = self.model.tokenize(modified_prompts)
+        modified_input_ids = modified_encoding['input_ids']
+        modified_mask = modified_encoding['attention_mask']
+
+        # Perform a second forward pass
+        modified_outputs = self.model(modified_prompts)
+        modified_logits = modified_outputs.logits[..., effect_tokens][range(len(modified_prompts)), modified_mask.sum(dim=1) - 1]
+
+        # Extract the logits for the second pass
+        lower_logits_second_pass = modified_logits.gather(1, lower_logit_indices.unsqueeze(-1)).squeeze(-1)
+        higher_logits_second_pass = modified_logits.gather(1, higher_logit_indices.unsqueeze(-1)).squeeze(-1)
+
+        # Compute the score
+        score = (higher_logits - lower_logits) - (higher_logits_second_pass - lower_logits_second_pass)
+
+        return score

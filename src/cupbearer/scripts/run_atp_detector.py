@@ -67,6 +67,7 @@ def main(dataset, detector_type, first_layer, last_layer, model_name, features, 
             detector = detectors.MahalanobisDetector(
                 activation_names=layer_list,
                 activation_processing_func=activation_processing_function,
+                relative=True
             )
         elif detector_type == "isoforest":
             raise NotImplementedError

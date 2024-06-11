@@ -284,12 +284,17 @@ class MahaAttributionDetector(AttributionDetector):
             k: detectors.statistical.mahalanobis_detector._pinv(C, rcond=1e-5)
             for k, C in self.att_covariances.items()
         }
+        self.att_inv_diag_covariances = {
+            k: torch.where(torch.diag(C) > 1.e-5, 1 / torch.diag(C), 0)
+            for k, C in self.att_covariances.items()
+        }
 
     def distance_function(self, effects):
         return detectors.statistical.helpers.mahalanobis(
             effects,
             self.att_means,
             self.att_inv_covariances,
+            self.att_inv_diag_covariances
         )
 
     def _get_trained_variables(self, saving: bool = False):

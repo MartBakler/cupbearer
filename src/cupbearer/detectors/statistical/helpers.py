@@ -60,7 +60,7 @@ def mahalanobis(
         inv_diag_covariances: Dictionary of inverse diagonal covariances for each layer,
             each element has shape (dim,).
             If None, the usual Mahalanobis distance is computed instead of the
-            (simplified) relative Mahalanobis distance.
+            simplified relative Mahalanobis distance.
 
     Returns:
         Dictionary of Mahalanobis distances for each layer,
@@ -79,11 +79,21 @@ def mahalanobis(
         distances[k] = distance
     return distances
 
-def mahalanobis_from_data(test_data, saved_data):
-    saved_means = {k: v.mean(dim=0) for k, v in saved_data.items()}
-    saved_inv_covs = {k: torch.linalg.pinv(torch.cov(v.T), 1.e-5) for k, v in saved_data.items()}
+def mahalanobis_from_data(test_data, saved_data, relative=True):
+    saved_means = dict()
+    saved_inv_covs = dict()
+    saved_inv_diag_covs = None
+    if relative:
+        saved_inv_diag_covs = dict()
 
-    return mahalanobis(test_data, saved_means, saved_inv_covs)
+    for k, v in saved_data.items():
+        saved_means[k] = v.mean(dim=0)
+        cov = torch.cov(v.T)
+        saved_inv_covs[k] = torch.linalg.pinv(cov, 1.e-5)
+        if relative:
+            saved_inv_diag_covs[k] = torch.where(torch.diag(cov) > 1.e-5, 1 / torch.diag(cov), 0)
+
+    return mahalanobis(test_data, saved_means, saved_inv_covs, saved_inv_diag_covs)
 
 def quantum_entropy(
     whitened_activations: dict[str, torch.Tensor],

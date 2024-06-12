@@ -8,6 +8,22 @@ from cupbearer.detectors.statistical.probe_detector import probe_error
 from cupbearer.detectors.statistical.helpers import mahalanobis_from_data, local_outlier_factor
 import gc
 
+datasets = [
+    "capitals",
+    "hemisphere",
+    "population",
+    "sciq",
+    "sentiment",
+    "nli",
+    "authors",
+    # "addition",
+    # "subtraction",
+    # "multiplication",
+    # "modularaddition",
+    # "squaring",
+]
+
+
 def main(dataset, detector_type, first_layer, last_layer, model_name, features, ablation, k=20):
     layers = list(range(first_layer, last_layer + 1))
 
@@ -67,7 +83,6 @@ def main(dataset, detector_type, first_layer, last_layer, model_name, features, 
             detector = detectors.MahalanobisDetector(
                 activation_names=layer_list,
                 activation_processing_func=activation_processing_function,
-                relative=True
             )
         elif detector_type == "isoforest":
             raise NotImplementedError
@@ -165,13 +180,14 @@ def main(dataset, detector_type, first_layer, last_layer, model_name, features, 
 
     if Path(save_path).exists():
         detector.load_weights(Path(save_path) / "detector")
-        scripts.eval_detector(task, detector, save_path, pbar=True, batch_size=eval_batch_size)
+        scripts.eval_detector(task, detector, save_path, pbar=True, batch_size=eval_batch_size, train_from_test=True)
     else:
         scripts.train_detector(task, detector, 
                         batch_size=batch_size, 
                         save_path=save_path, 
                         eval_batch_size=eval_batch_size,
-                        pbar=True)
+                        pbar=True,
+                        train_from_test=True)
     
     del task, detector
     gc.collect()
@@ -192,6 +208,9 @@ if __name__ == '__main__':
     if args.sweep_layers:
         for layer in range(args.first_layer, args.last_layer + 1):
             main(args.dataset, args.detector_type, layer, layer, args.model_name, args.features, args.ablation, k=args.k)
+    elif args.dataset == "all":
+        for dataset in datasets:
+            main(dataset, args.detector_type, args.first_layer, args.last_layer, args.model_name, args.features, args.ablation, k=args.k)
     else:
         main(args.dataset, args.detector_type, args.first_layer, args.last_layer, args.model_name, args.features, args.ablation, k=args.k)
 

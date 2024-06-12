@@ -45,6 +45,7 @@ def mahalanobis(
     means: dict[str, torch.Tensor],
     inv_covariances: dict[str, torch.Tensor],
     inv_diag_covariances: Optional[dict[str, torch.Tensor]] = None,
+    along_eigenvectors: bool = False,
 ):
     """Compute Simplified Relative Mahalanobis distances for a batch of activations.
 
@@ -72,11 +73,23 @@ def mahalanobis(
         activation = activation.view(batch_size, -1)
         delta = activation - means[k]
         assert delta.ndim == 2 and delta.shape[0] == batch_size
-        # Compute unnormalized negative log likelihood under a Gaussian:
-        distance = torch.einsum("bi,ij,bj->b", delta, inv_covariances[k], delta)
-        if inv_diag_covariances is not None:
-            distance -= torch.einsum("bi,i->b", delta**2, inv_diag_covariances[k])
-        distances[k] = distance
+
+        if along_eigenvectors:
+            sorted_indices = torch.argsort(eigvals, descending=True)
+            eigvals = eigvals[sorted_indices]
+            eigvecs = eigvecs[:, sorted_indices]
+
+            # Compute per-eigenvector Mahalanobis distance
+            per_eigenvector_distances = torch.einsum("bi,ij->bj", delta, eigvecs) / torch.sqrt(eigvals)
+            
+            distances[k] = per_eigenvector_distances
+        else:
+            # Compute unnormalized negative log likelihood under a Gaussian:
+            distance = torch.einsum("bi,ij,bj->b", delta, inv_covariances[k], delta)
+            # if inv_diag_covariances is not None:
+            #     # distance -= torch.einsum("bi,i->b", delta**2, inv_diag_covariances[k])
+            #     distance = torch.einsum("bi,i->b", delta**2, inv_diag_covariances[k])
+            distances[k] = distance
     return distances
 
 def mahalanobis_from_data(test_data, saved_data, relative=True):
@@ -98,6 +111,7 @@ def mahalanobis_from_data(test_data, saved_data, relative=True):
 def quantum_entropy(
     whitened_activations: dict[str, torch.Tensor],
     alpha: float = 4,
+    batch_covariance: dict[str, torch.Tensor] | None = None,
 ) -> dict[str, torch.Tensor]:
     """Quantum Entropy score per layer."""
     distances: dict[str, torch.Tensor] = {}
@@ -105,8 +119,11 @@ def quantum_entropy(
         activation = activation.flatten(start_dim=1)
 
         # Compute QUE-score
-        centered_batch = activation - activation.mean(dim=0, keepdim=True)
-        batch_cov = centered_batch.mT @ centered_batch
+        if batch_covariance is None:
+            centered_batch = activation - activation.mean(dim=0, keepdim=True)
+            batch_cov = centered_batch.mT @ centered_batch
+        else:
+            batch_cov = batch_covariance[k]
 
         batch_cov_norm = torch.linalg.eigvalsh(batch_cov).max()
         exp_factor = torch.matrix_exp(alpha * batch_cov / batch_cov_norm)

@@ -11,13 +11,14 @@ def main(
     detector: AnomalyDetector,
     save_path: Path | str | None,
     eval_batch_size: int = 1024,
+    train_from_test: bool = False,
     **train_kwargs,
 ):
     detector.set_model(task.model)
 
     detector.train(
         trusted_data=task.trusted_data,
-        untrusted_data=task.untrusted_train_data,
+        untrusted_data=task.test_data,
         save_path=save_path,
         **train_kwargs,
     )
@@ -30,4 +31,5 @@ def main(
         pbar=True,
         batch_size=eval_batch_size,
         save_path=save_path,
+        train_from_test=train_from_test,
     )

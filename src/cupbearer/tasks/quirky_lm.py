@@ -120,4 +120,5 @@ def quirky_lm(
         anomalous_test_data=quirky_dataset(bob_test),
         clean_untrusted_data=quirky_dataset(alice_untrusted),
         anomalous_untrusted_data=quirky_dataset(bob_train),
+        train_test_mix=True
     )

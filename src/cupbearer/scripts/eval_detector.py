@@ -11,8 +11,17 @@ def main(
     pbar: bool = False,
     batch_size: int = 1024,
     layerwise: bool = False,
+    train_from_test: bool = False,
 ):
     detector.set_model(task.model)
+    if train_from_test:
+        detector.eval(
+            dataset=task.train_test_mix_data,
+            pbar=pbar,
+            save_path=Path(save_path) / "train_from_test",
+            batch_size=batch_size,
+            layerwise=layerwise,
+        )
 
     return detector.eval(
         dataset=task.test_data,

@@ -5,7 +5,6 @@ import pickle
 from datetime import datetime
 from pathlib import Path
 from typing import Union, overload
-
 import torch
 
 from .get_activations import get_activations, get_activations_and_grads  # noqa: F401
@@ -119,6 +118,8 @@ def get_object(path: str):
 def inputs_from_batch(batch):
     # batch may contain labels or other info, if so we strip it out
     if isinstance(batch, (tuple, list)):
+        if isinstance(batch[0][1], torch.Tensor):
+            return batch[0][0]
         return batch[0]
     else:
         return batch

@@ -1,16 +1,17 @@
 from dataclasses import dataclass
 from typing import Callable, Optional
-
+from datasets import concatenate_datasets
 from torch import nn
 from torch.utils.data import Dataset, random_split
 
-from cupbearer.data import MixedData
+from cupbearer.data import MixedData, HuggingfaceDataset
 
 
 @dataclass(kw_only=True)
 class Task:
     trusted_data: Dataset
     untrusted_train_data: Optional[MixedData] = None
+    train_test_mix_data: Optional[MixedData] = None
     test_data: MixedData
     model: nn.Module
 
@@ -26,6 +27,7 @@ class Task:
         clean_train_weight: Optional[float] = 0.5,
         clean_test_weight: Optional[float] = 0.5,
         untrusted_labels: bool = False,
+        train_test_mix: bool = False,
     ):
         untrusted_train_data = None
         if clean_untrusted_data and anomalous_untrusted_data:
@@ -41,11 +43,22 @@ class Task:
             anomalous=anomalous_test_data,
             normal_weight=clean_test_weight,
         )
+
+        train_test_mix_data = None
+        if train_test_mix and clean_untrusted_data and anomalous_untrusted_data:
+            train_test_mix_data = MixedData(
+                normal=anomalous_untrusted_data,
+                anomalous=anomalous_test_data,
+                normal_weight=clean_train_weight,
+                return_anomaly_labels=True
+            )
+
         return Task(
             trusted_data=trusted_data,
             untrusted_train_data=untrusted_train_data,
             test_data=test_data,
             model=model,
+            train_test_mix_data=train_test_mix_data,
         )
 
     @classmethod

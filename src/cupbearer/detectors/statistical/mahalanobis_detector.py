@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 from einops import rearrange
+import pdb
 
 from cupbearer.detectors.statistical.helpers import mahalanobis
 from cupbearer.detectors.statistical.statistical import (
@@ -53,7 +54,7 @@ def log_chi_squared_percentiles(distances, dim):
 
 class MahalanobisDetector(ActivationCovarianceBasedDetector):
     def post_covariance_training(
-        self, rcond: float = 1e-5, relative: bool = False, **kwargs
+        self, rcond: float = 1e-5, relative: bool = True, **kwargs
     ):
         self.inv_covariances = {k: _pinv(C, rcond) for k, C in self.covariances.items()}
         self.inv_diag_covariances = None
@@ -90,9 +91,11 @@ class MahalanobisDetector(ActivationCovarianceBasedDetector):
                 v, "(batch independent) -> batch independent", batch=batch_size
             ).mean(dim=1)
 
-        return {
-            k: log_chi_squared_percentiles(v, dims[k]) for k, v in distances.items()
-        }
+        return distances
+
+        # return {
+        #     k: log_chi_squared_percentiles(v, dims[k]) for k, v in distances.items()
+        # }
 
     def _get_trained_variables(self, saving: bool = False):
         return {

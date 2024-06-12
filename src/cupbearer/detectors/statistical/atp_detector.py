@@ -15,6 +15,7 @@ from cupbearer import detectors, tasks, utils, scripts
 from cupbearer.detectors.statistical.statistical import ActivationCovarianceBasedDetector
 from cupbearer.data import HuggingfaceDataset, MixedData
 from torch import Tensor, nn
+from torch.utils.data import DataLoader
 from datasets import concatenate_datasets
 
 
@@ -270,7 +271,7 @@ class AttributionDetector(ActivationCovarianceBasedDetector, ABC):
  
         return distances
 
-    def post_train(self):
+    def post_train(self, untrusted_data, batch_size=1):
         pass
 
 class MahaAttributionDetector(AttributionDetector):
@@ -301,6 +302,7 @@ class MahaAttributionDetector(AttributionDetector):
         return{
             "means": self.att_means,
             "inv_covariances": self.att_inv_covariances,
+            "inv_diag_covariances": self.att_inv_diag_covariances,
             "noise": self.noise
         }
 
@@ -308,6 +310,7 @@ class MahaAttributionDetector(AttributionDetector):
         self.att_means = variables["means"]
         self.att_inv_covariances = variables["inv_covariances"]
         self.noise = variables["noise"]
+        self.att_inv_diag_covariances = variables["inv_diag_covariances"]
 
 
 class LOFAttributionDetector(AttributionDetector):
@@ -323,7 +326,7 @@ class LOFAttributionDetector(AttributionDetector):
         super().__init__(shapes, output_func, ablation, activation_processing_func)
         self.k = k
 
-    def post_train(self):
+    def post_train(self, **kwargs):
         self.effects = self._effects
 
     def distance_function(self, test_effects):
@@ -345,7 +348,7 @@ class LOFAttributionDetector(AttributionDetector):
 
 class IsoForestAttributionDetector(AttributionDetector):
 
-    def post_train(self):
+    def post_train(self, **kwargs):
         self.isoforest = {name: IsolationForest().fit(layer_effect.cpu().numpy()) for name, layer_effect in self._effects.items()}
 
     def distance_function(self, test_effects):
@@ -387,3 +390,95 @@ class ContrastProbeAttributionDetector(AttributionDetector):
     
     def _set_trained_variables(self, variables):
         self.classifier = variables["classifier"]
+
+class QueAttributionDetector(AttributionDetector):
+
+    def post_train(self, untrusted_data, batch_size=1, rcond=1e-5):
+
+        whitening_matrices = {}
+        for k, cov in self.covariances.items():
+            # Compute decomposition
+            eigs = torch.linalg.eigh(cov)
+
+            # Zero entries corresponding to eigenvalues smaller than rcond
+            vals_rsqrt = eigs.eigenvalues.rsqrt()
+            vals_rsqrt[eigs.eigenvalues < rcond * eigs.eigenvalues.max()] = 0
+
+            # PCA whitening
+            # following https://doi.org/10.1080/00031305.2016.1277159
+            # and https://stats.stackexchange.com/a/594218/319192
+            # but transposed (sphering with x@W instead of W@x)
+            whitening_matrices[k] = eigs.eigenvectors * vals_rsqrt.unsqueeze(0)
+            assert torch.allclose(
+                whitening_matrices[k], eigs.eigenvectors @ vals_rsqrt.diag()
+            )
+        self.whitening_matrices = whitening_matrices
+        
+        data_loader = DataLoader(untrusted_data, batch_size=batch_size, shuffle=False)
+
+        self.untrusted_covariances = {k: torch.zeros(32, 32, device=self.model.device) for k in self.shapes.keys()}
+        self._n = 0
+        self._means = {k: torch.zeros(32, device=self.model.device) for k in self.shapes.keys()}
+
+        for batch in tqdm(data_loader):
+            inputs = utils.inputs_from_batch(batch)
+            with atp(self.model, self.noise, head_dim=128) as untrusted_effects:
+                out = self.model(inputs).logits
+                out = self.output_func(out)
+                # assert out.shape == (batch_size,), out.shape
+                out.backward()
+            
+            self._n += batch_size
+
+            for name, effect in untrusted_effects.items():
+                # Get the effect at the last token
+                effect = effect[:, :, -1]
+                # Merge the last dimensions
+                effect = effect.reshape(batch_size, -1)
+                self._means[name], self.untrusted_covariances[name], _ = detectors.statistical.helpers.update_covariance(
+                    self._means[name], self.untrusted_covariances[name], self._n, effect
+                    )
+
+        whitened_activations = {
+            k: torch.einsum(
+                "bi,ij->bj",
+                self._activations[k].flatten(start_dim=1) - self.means[k],
+                self.whitening_matrices[k],
+            )
+            for k in self._activations.keys()
+        }
+        whitened_activations = {
+            k: whitened_activations[k].flatten(start_dim=1) - 
+            whitened_activations[k].flatten(start_dim=1).mean(dim=0, keepdim=True) 
+            for k in whitened_activations.keys()
+        }
+
+        self.untrusted_covariances = {k: whitened_activations[k].mT @ whitened_activations[k] for k in whitened_activations.keys()}
+
+    def distance_function(self, test_effects):
+        
+        whitened_test_effects = {
+            k: torch.einsum(
+                "bi,ij->bj",
+                test_effects[k].flatten(start_dim=1) - self.means[k],
+                self.whitening_matrices[k],
+            )
+            for k in test_effects.keys()
+        }
+
+        return detectors.statistical.helpers.quantum_entropy(
+            whitened_test_effects,
+            self.untrusted_covariances
+        )
+
+    def _get_trained_variables(self, saving: bool = False):
+        return {
+            "means": self.means,
+            "whitening_matrices": self.whitening_matrices,
+            "untrusted_covariances": self.untrusted_covariances,
+        }
+
+    def _set_trained_variables(self, variables):
+        self.means = variables["means"]
+        self.whitening_matrices = variables["whitening_matrices"]
+        self.untrusted_covariances = variables["untrusted_covariances"]

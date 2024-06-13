@@ -12,6 +12,7 @@ def main(
     save_path: Path | str | None,
     eval_batch_size: int = 1024,
     train_from_test: bool = False,
+    layerwise: bool = False,
     **train_kwargs,
 ):
     detector.set_model(task.model)
@@ -31,5 +32,6 @@ def main(
         pbar=True,
         batch_size=eval_batch_size,
         save_path=save_path,
+        layerwise=layerwise,
         train_from_test=train_from_test,
     )

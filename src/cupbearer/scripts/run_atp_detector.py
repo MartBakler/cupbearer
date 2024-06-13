@@ -25,7 +25,8 @@ datasets = [
 
 
 def main(dataset, detector_type, first_layer, last_layer, model_name, features, ablation, k=20):
-    layers = list(range(first_layer, last_layer + 1))
+    interval = max(1, (last_layer - first_layer) // 4)
+    layers = list(range(first_layer, last_layer + 1, interval))
 
     task = tasks.quirky_lm(include_untrusted=True, mixture=True, standardize_template=True, dataset=dataset, random_names=True)
 
@@ -68,6 +69,13 @@ def main(dataset, detector_type, first_layer, last_layer, model_name, features, 
                 ablation=ablation, 
                 activation_processing_func=activation_processing_function
             )
+        elif detector_type == 'que':
+            detector = atp_detector.QueAttributionDetector(
+                layer_dict, 
+                effect_prob_func, 
+                ablation=ablation, 
+                activation_processing_func=activation_processing_function
+            )
 
         emb = task.model.hf_model.get_input_embeddings()
         emb.requires_grad_(True)
@@ -98,6 +106,11 @@ def main(dataset, detector_type, first_layer, last_layer, model_name, features, 
             )
         elif detector_type == 'spectral':
             detector = detectors.statistical.spectral_detector.SpectralSignatureDetector(
+                activation_names=layer_list,
+                activation_processing_func=activation_processing_function,
+            )
+        elif detector_type == 'likelihood':
+            detector = detectors.statistical.likelihood_ratio_detector.LikelihoodRatioDetector(
                 activation_names=layer_list,
                 activation_processing_func=activation_processing_function,
             )
@@ -180,14 +193,15 @@ def main(dataset, detector_type, first_layer, last_layer, model_name, features, 
 
     if Path(save_path).exists():
         detector.load_weights(Path(save_path) / "detector")
-        scripts.eval_detector(task, detector, save_path, pbar=True, batch_size=eval_batch_size, train_from_test=True)
+        scripts.eval_detector(task, detector, save_path, pbar=True, batch_size=eval_batch_size, train_from_test=False, layerwise=True)
     else:
         scripts.train_detector(task, detector, 
                         batch_size=batch_size, 
                         save_path=save_path, 
                         eval_batch_size=eval_batch_size,
                         pbar=True,
-                        train_from_test=True)
+                        train_from_test=False,
+                        layerwise=True)
     
     del task, detector
     gc.collect()

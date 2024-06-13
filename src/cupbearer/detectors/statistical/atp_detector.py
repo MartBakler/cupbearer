@@ -217,7 +217,7 @@ class AttributionDetector(ActivationCovarianceBasedDetector, ABC):
                     )
                 )
 
-        self.post_train()
+        self.post_train(untrusted_data)
 
     def get_noise_tensor(self, trusted_data, batch_size, device, dtype, 
                          subset_size=1000, activation_batch_size=16):
@@ -271,7 +271,7 @@ class AttributionDetector(ActivationCovarianceBasedDetector, ABC):
  
         return distances
 
-    def post_train(self, untrusted_data, batch_size=1):
+    def post_train(self, untrusted_data=None, batch_size=1):
         pass
 
 class MahaAttributionDetector(AttributionDetector):
@@ -396,7 +396,7 @@ class QueAttributionDetector(AttributionDetector):
     def post_train(self, untrusted_data, batch_size=1, rcond=1e-5):
 
         whitening_matrices = {}
-        for k, cov in self.covariances.items():
+        for k, cov in self._Cs.items():
             # Compute decomposition
             eigs = torch.linalg.eigh(cov)
 
@@ -418,7 +418,7 @@ class QueAttributionDetector(AttributionDetector):
 
         self.untrusted_covariances = {k: torch.zeros(32, 32, device=self.model.device) for k in self.shapes.keys()}
         self._n = 0
-        self._means = {k: torch.zeros(32, device=self.model.device) for k in self.shapes.keys()}
+        self._effect_means = {k: torch.zeros(32, device=self.model.device) for k in self.shapes.keys()}
 
         for batch in tqdm(data_loader):
             inputs = utils.inputs_from_batch(batch)
@@ -435,32 +435,32 @@ class QueAttributionDetector(AttributionDetector):
                 effect = effect[:, :, -1]
                 # Merge the last dimensions
                 effect = effect.reshape(batch_size, -1)
-                self._means[name], self.untrusted_covariances[name], _ = detectors.statistical.helpers.update_covariance(
-                    self._means[name], self.untrusted_covariances[name], self._n, effect
+                self._effect_means[name], self.untrusted_covariances[name], _ = detectors.statistical.helpers.update_covariance(
+                    self._effect_means[name], self.untrusted_covariances[name], self._n, effect
                     )
 
-        whitened_activations = {
+        whitened_effects = {
             k: torch.einsum(
                 "bi,ij->bj",
-                self._activations[k].flatten(start_dim=1) - self.means[k],
+                self._effects[k].flatten(start_dim=1) - self._effect_means[k],
                 self.whitening_matrices[k],
             )
-            for k in self._activations.keys()
+            for k in self._effects.keys()
         }
-        whitened_activations = {
-            k: whitened_activations[k].flatten(start_dim=1) - 
-            whitened_activations[k].flatten(start_dim=1).mean(dim=0, keepdim=True) 
-            for k in whitened_activations.keys()
+        whitened_effects = {
+            k: whitened_effects[k].flatten(start_dim=1) - 
+            whitened_effects[k].flatten(start_dim=1).mean(dim=0, keepdim=True) 
+            for k in whitened_effects.keys()
         }
 
-        self.untrusted_covariances = {k: whitened_activations[k].mT @ whitened_activations[k] for k in whitened_activations.keys()}
+        self.untrusted_covariances = {k: whitened_effects[k].mT @ whitened_effects[k] for k in whitened_effects.keys()}
 
     def distance_function(self, test_effects):
         
         whitened_test_effects = {
             k: torch.einsum(
                 "bi,ij->bj",
-                test_effects[k].flatten(start_dim=1) - self.means[k],
+                test_effects[k].flatten(start_dim=1) - self._effect_means[k],
                 self.whitening_matrices[k],
             )
             for k in test_effects.keys()
@@ -468,17 +468,19 @@ class QueAttributionDetector(AttributionDetector):
 
         return detectors.statistical.helpers.quantum_entropy(
             whitened_test_effects,
-            self.untrusted_covariances
+            batch_covariance = self.untrusted_covariances
         )
 
     def _get_trained_variables(self, saving: bool = False):
         return {
-            "means": self.means,
+            "_effect_means": self._effect_means,
             "whitening_matrices": self.whitening_matrices,
             "untrusted_covariances": self.untrusted_covariances,
+            "noise": self.noise
         }
 
     def _set_trained_variables(self, variables):
-        self.means = variables["means"]
+        self._effect_means = variables["_effect_means"]
         self.whitening_matrices = variables["whitening_matrices"]
         self.untrusted_covariances = variables["untrusted_covariances"]
+        self.noise = variables["noise"]

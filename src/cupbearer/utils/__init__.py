@@ -118,6 +118,8 @@ def get_object(path: str):
 def inputs_from_batch(batch):
     # batch may contain labels or other info, if so we strip it out
     if isinstance(batch, (tuple, list)):
+        if isinstance(batch[0], tuple):
+            return batch[0]
         if isinstance(batch[0][1], torch.Tensor):
             return batch[0][0]
         return batch[0]

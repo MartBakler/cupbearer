@@ -23,7 +23,7 @@ development and the PyPi version will often be outdated.)
 Alternatively, if you're going to do development work on the library itself:
 1. Clone this git repository
 2. Create a virtual environment with Python 3.10 and activate it
-3. Run `pip install -e .` inside the git repo to install the package in editable mode
+3. Run `pip install -e .` inside the git repo to install the package in editable mode (or run `pip install .[dev,wandb,quirky_lm]` to install the optional dependencies)
 
 ### Notes on Pytorch
 Depending on what platform you're on, you may need to install Pytorch separately *before*

@@ -75,6 +75,8 @@ class MahalanobisDetector(ActivationCovarianceBasedDetector):
                     activation, "batch independent dim -> (batch independent) dim"
                 )
             assert activation.ndim == 2, activation.shape
+            if self.pca_basis:
+                activation = activation @ self.pca_components[k]
             activations[k] = activation
 
         distances = mahalanobis(
@@ -98,6 +100,13 @@ class MahalanobisDetector(ActivationCovarianceBasedDetector):
         # }
 
     def _get_trained_variables(self, saving: bool = False):
+        if self.pca_basis:
+            return {
+            "means": self.means,
+            "inv_covariances": self.inv_covariances,
+            "inv_diag_covariances": self.inv_diag_covariances,
+            "pca_components": self.pca_components,
+        }
         return {
             "means": self.means,
             "inv_covariances": self.inv_covariances,
@@ -108,3 +117,7 @@ class MahalanobisDetector(ActivationCovarianceBasedDetector):
         self.means = variables["means"]
         self.inv_covariances = variables["inv_covariances"]
         self.inv_diag_covariances = variables["inv_diag_covariances"]
+        if self.pca_basis:
+            if "pca_components" not in variables:
+                raise ValueError("pca_components must be provided for PCA basis.")
+            self.pca_components = variables["pca_components"]

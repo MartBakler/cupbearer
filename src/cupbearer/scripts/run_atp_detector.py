@@ -25,7 +25,8 @@ datasets = [
 ]
 
 
-def main(dataset, detector_type, first_layer, last_layer, model_name, features, ablation, k=20, random_names=True, layerwise=False, alpha=8):
+def main(dataset, detector_type, first_layer, last_layer, model_name, features, ablation, k=20, random_names=True, layerwise=False, alpha=8,  pca_basis=False):
+
     interval = max(1, (last_layer - first_layer) // 4)
     layers = list(range(first_layer, last_layer + 1, interval))
 
@@ -100,6 +101,7 @@ def main(dataset, detector_type, first_layer, last_layer, model_name, features, 
             detector = detectors.MahalanobisDetector(
                 activation_names=layer_list,
                 activation_processing_func=activation_processing_function,
+                pca_basis = pca_basis
             )
         elif detector_type == "isoforest":
             raise NotImplementedError
@@ -244,6 +246,7 @@ if __name__ == '__main__':
     parser.add_argument('--sweep_alpha', action='store_true', default=False, help='Sweep alpha one by one')
     parser.add_argument('--layerwise', action='store_true', default=False, help='Evaluate layerwise instead of aggregated')
     parser.add_argument('--nonrandom_names', action='store_true', default=False, help='Avoid randomising names')
+    parser.add_argument('--pca_basis', default=True, help='Apply PCA basis to activations')
 
     args = parser.parse_args()
 
@@ -259,7 +262,8 @@ if __name__ == '__main__':
             k=args.k, 
             alpha=alpha, 
             layerwise=args.layerwise, 
-            random_names=not args.nonrandom_names
+            random_names=not args.nonrandom_names,
+            pca_basis=args.pca_basis
         )
 
     if args.sweep_alpha:
@@ -271,10 +275,10 @@ if __name__ == '__main__':
                 run_main_with_args(args.dataset, args.first_layer, args.last_layer, alpha)
     elif args.sweep_layers:
         for layer in range(args.first_layer, args.last_layer + 1):
-            run_main_with_args(args.dataset, layer, layer, args.alpha)
+            main(args.dataset, args.detector_type, layer, layer, args.model_name, args.features, args.ablation, k=args.k, pca_basis=args.pca_basis)
     elif args.dataset == "all":
         for dataset in datasets:
-            run_main_with_args(dataset, args.first_layer, args.last_layer, args.alpha)
+            run_main_with_args(dataset, args.first_layer, args.last_layer, args.alpha, args.pca_basis)
     else:
-        run_main_with_args(args.dataset, args.first_layer, args.last_layer, args.alpha)
+        run_main_with_args(args.dataset, args.first_layer, args.last_layer, args.alpha, args.pca_basis)
 

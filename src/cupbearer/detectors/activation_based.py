@@ -153,11 +153,13 @@ class ActivationBasedDetector(AnomalyDetector):
         | None = None,
         cache: ActivationCache | None = None,
         layer_aggregation: str = "mean",
+        pca_basis = False
     ):
         super().__init__(layer_aggregation=layer_aggregation)
         self.activation_names = activation_names
         self.activation_processing_func = activation_processing_func
         self.cache = cache
+        self.pca_basis = pca_basis
 
     def _get_activations_no_cache(self, inputs) -> dict[str, torch.Tensor]:
         device = next(self.model.parameters()).device

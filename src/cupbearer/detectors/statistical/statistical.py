@@ -7,7 +7,7 @@ from tqdm import tqdm
 
 from cupbearer.detectors.activation_based import ActivationBasedDetector
 from cupbearer.detectors.statistical.helpers import update_covariance
-
+from cupbearer.detectors.activations import get_pca_reduction
 
 class StatisticalDetector(ActivationBasedDetector, ABC):
     use_trusted: bool = True
@@ -61,11 +61,21 @@ class StatisticalDetector(ActivationBasedDetector, ABC):
 
             if pbar:
                 data_loader = tqdm(data_loader, total=max_steps or len(data_loader))
-
+            if self.pca_basis:
+                self.pca_components = get_pca_reduction(data_loader, max_steps, self)
+                # re-init the means for the correct size
+                pca_sizes = {k: v.size() for k, v in self.pca_components.items()}
+                self.init_variables(
+                    pca_sizes, device=next(iter(self.pca_components.values())).device
+                )
             for i, batch in enumerate(data_loader):
                 if max_steps and i >= max_steps:
                     break
                 activations = self.get_activations(batch)
+                # if pca, project the activations to the principal components
+                if self.pca_basis:
+                    for k, activation in activations.items():
+                        activations[k] = activation @ self.pca_components[k]
                 self.batch_update(activations)
 
 

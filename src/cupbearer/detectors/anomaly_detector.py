@@ -238,7 +238,8 @@ class AnomalyDetector(ABC):
 
             if not save_path:
                 return metrics, figs
-
+        # close the plots
+        plt.close("all")
         save_path = Path(save_path)
 
         save_path.mkdir(parents=True, exist_ok=True)

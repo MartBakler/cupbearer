@@ -10,5 +10,5 @@ from .atp_detector import (
 )
 from .trajectory_detector import TrajectoryDetector
 from .probe_detector import SimpleProbeDetector
-from .contrast_detector import MisconceptionContrastDetector
-from .likelihood_ratio_detector import LikelihoodRatioDetector
+from .contrast_detector import MisconceptionContrastDetector, ProbeTrajectoryDetector
+from .likelihood_ratio_detector import LikelihoodRatioDetector, ExpectationMaximisationDetector

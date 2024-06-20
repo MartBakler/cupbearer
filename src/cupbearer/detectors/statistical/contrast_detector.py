@@ -1,10 +1,12 @@
 from typing import Callable, Any
+from tqdm import tqdm
 
 import torch
 
 from cupbearer import utils
 from cupbearer.utils.classifier import Classifier
 from cupbearer.detectors.activation_based import ActivationBasedDetector, ActivationCache
+from cupbearer.detectors.statistical.helpers import mahalanobis_from_data
 
 # Thanks GPT-4o
 # Procedure:
@@ -67,20 +69,10 @@ misconception_pairs = [
 ]   
 
 class MisconceptionContrastDetector(ActivationBasedDetector):
-    def __init__(
-        self,
-        activation_names: list[str],
-        activation_processing_func: Callable[[torch.Tensor, Any, str], torch.Tensor] | None = None,
-        cache: ActivationCache | None = None,
-        layer_aggregation: str = "mean",
-    ):
-        super().__init__(activation_names, activation_processing_func, cache, layer_aggregation)
-        self.classifier = None
-
     def train(self, trusted_data=None, untrusted_data=None, save_path=None, **kwargs):
         misconceptions, correct_conceptions = zip(*misconception_pairs)
-        misconceptions_activations = self.get_activations([misconceptions, 'true'])
-        correct_conceptions_activations = self.get_activations([correct_conceptions, 'false'])
+        misconceptions_activations = self.get_activations(misconceptions)
+        correct_conceptions_activations = self.get_activations(correct_conceptions)
         self.classifier = {}
         self.input_dim = {}
 
@@ -106,6 +98,7 @@ class MisconceptionContrastDetector(ActivationBasedDetector):
         return {
             "input_dim": self.input_dim,
             "classifier_state_dict": {layer: self.classifier[layer].state_dict() for layer in self.activation_names},
+            "trajectory": self.trajectory,
         }
 
     def _set_trained_variables(self, variables):
@@ -115,3 +108,65 @@ class MisconceptionContrastDetector(ActivationBasedDetector):
             for layer in self.activation_names:
                 self.classifier[layer] = Classifier(input_dim=input_dim[layer])
                 self.classifier[layer].load_state_dict(variables["classifier_state_dict"][layer])
+
+
+class ProbeTrajectoryDetector(ActivationBasedDetector):
+    def train(self, trusted_data=None, untrusted_data=None, save_path=None, batch_size=16, **kwargs):
+        dl = torch.utils.data.DataLoader(trusted_data, batch_size=batch_size, shuffle=True)
+
+        activations = {layer: [] for layer in self.activation_names}
+        answers = []
+
+        for batch in tqdm(dl):
+            inputs, labels = batch
+            new_activations = self.get_activations(batch)
+            for layer in self.activation_names:
+                activations[layer].append(new_activations[layer])
+            answers.append(labels)
+
+        activations = {layer: torch.cat(activations[layer], dim=0) for layer in self.activation_names}
+        answers = torch.cat(answers, dim=0)
+
+        self.classifier = {}
+        self.input_dim = {}
+        self.trajectory = {}
+
+        for layer in tqdm(self.activation_names):
+            input_dim = activations[layer].shape[-1]
+            self.input_dim[layer] = input_dim
+            self.classifier[layer] = Classifier(input_dim=input_dim, device=self.model.device)
+            self.classifier[layer].fit_cv(activations[layer], answers.to(self.model.device))
+            with torch.no_grad():
+                self.trajectory[layer] = self.classifier[layer].forward(activations[layer])
+
+    def layerwise_scores(self, batch):
+        activations = self.get_activations(batch)
+        test_trajectory = {}
+
+        with torch.no_grad():
+            for layer in self.activation_names:
+                probabilities = self.classifier[layer].to(activations[layer].device).forward(activations[layer])
+                test_trajectory[layer] = probabilities
+
+        train_trajectories = torch.cat([self.trajectory[layer].unsqueeze(-1) for layer in self.activation_names 
+                                        if (torch.isfinite(self.trajectory[layer]).all() and torch.isfinite(test_trajectory[layer]).all())], dim=-1)
+        test_trajectory = torch.cat([test_trajectory[layer].unsqueeze(-1) for layer in self.activation_names 
+                                     if (torch.isfinite(self.trajectory[layer]).all() and torch.isfinite(test_trajectory[layer]).all())], dim=-1)
+
+        return mahalanobis_from_data({'all': test_trajectory}, {'all': train_trajectories}, relative=False)
+
+    def _get_trained_variables(self, saving: bool = False):
+        return {
+            "input_dim": self.input_dim,
+            "classifier_state_dict": {layer: self.classifier[layer].state_dict() for layer in self.activation_names},
+            "trajectory": self.trajectory,
+        }
+
+    def _set_trained_variables(self, variables):
+        if variables["classifier_state_dict"]:
+            input_dim = variables["input_dim"]
+            self.classifier = {}
+            for layer in self.activation_names:
+                self.classifier[layer] = Classifier(input_dim=input_dim[layer])
+                self.classifier[layer].load_state_dict(variables["classifier_state_dict"][layer])
+        self.trajectory = variables["trajectory"]

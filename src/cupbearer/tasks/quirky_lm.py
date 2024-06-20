@@ -43,7 +43,7 @@ def quirky_lm(
     # from a cache anyway.
     if not fake_model:
         model = AutoPeftModelForCausalLM.from_pretrained(model_name, device_map=device)
-        model.merge_and_unload()
+        model = model.merge_and_unload()
         tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1")
         tokenizer.pad_token_id = tokenizer.eos_token_id
         tokenizer.padding_side = "right"

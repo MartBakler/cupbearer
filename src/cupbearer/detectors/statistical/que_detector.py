@@ -10,6 +10,10 @@ from cupbearer.detectors.statistical.statistical import (
 
 
 class QuantumEntropyDetector(ActivationCovarianceBasedDetector):
+    def __init__(self, activation_names: list[str], alpha: float, **kwargs):
+        super().__init__(activation_names, **kwargs)
+        self.alpha = alpha
+
     def post_covariance_training(self, rcond: float = 1e-5, **kwargs):
         whitening_matrices = {}
         for k, cov in self.covariances.items():
@@ -83,7 +87,9 @@ class QuantumEntropyDetector(ActivationCovarianceBasedDetector):
             for k in activations.keys()
         }
         # TODO should possibly pass rank
-        return quantum_entropy(whitened_activations, batch_covariance=self.untrusted_covariances)
+        return quantum_entropy(whitened_activations, 
+                               alpha=self.alpha,
+                               batch_covariance=self.untrusted_covariances)
 
     def _get_trained_variables(self, saving: bool = False):
         return {

@@ -90,6 +90,9 @@ class Classifier(torch.nn.Module):
             max_iter=max_iter,
         )
 
+        self.linear.bias.data.zero_()
+        self.linear.weight.data.zero_()
+
         num_classes = self.linear.out_features
         loss_fn = bce_with_logits if num_classes == 1 else cross_entropy
         loss = torch.inf
@@ -179,6 +182,7 @@ class Classifier(torch.nn.Module):
                 logits = self(val_x).squeeze(-1)
                 loss = loss_fn(logits, val_y)
                 losses[i, j] = loss
+
 
         mean_losses = losses.mean(dim=0)
         best_idx = mean_losses.argmin()

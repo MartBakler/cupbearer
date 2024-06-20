@@ -12,8 +12,12 @@ def main(
     batch_size: int = 1024,
     layerwise: bool = False,
     train_from_test: bool = False,
+    answer_accuracy: bool = False,
 ):
+    if answer_accuracy:
+        task.test_data.return_labels = ['answer', 'anomaly']
     detector.set_model(task.model)
+
     if train_from_test:
         detector.eval(
             dataset=task.train_test_mix_data,

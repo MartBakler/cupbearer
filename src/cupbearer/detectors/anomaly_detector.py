@@ -125,12 +125,13 @@ class AnomalyDetector(ABC):
         scores = defaultdict(list)
         labels = defaultdict(list)
         agreement = defaultdict(list)
+        answers = defaultdict(list)
 
         # It's important we don't use torch.inference_mode() here, since we want
         # to be able to override this in certain detectors using torch.enable_grad().
         with torch.no_grad():
             for batch in test_loader:
-                inputs, new_labels, new_agreements = batch
+                inputs, (new_labels, new_agreements) = batch
                 if layerwise:
                     new_scores = self.layerwise_scores(inputs)
                 else:
@@ -145,6 +146,7 @@ class AnomalyDetector(ABC):
         scores = {layer: np.concatenate(scores[layer]) for layer in scores}
         labels = {layer: np.concatenate(labels[layer]) for layer in labels}
         agreement = {layer: np.concatenate(agreement[layer]) for layer in agreement}
+        answers = {layer: np.concatenate(answers[layer]) for layer in answers}
 
         figs = {}
 
@@ -171,12 +173,12 @@ class AnomalyDetector(ABC):
             metrics[layer]["Perfect_filter_remainder"] = 1 - num_negatives/np.sum(labels[layer]==0)
 
             auc_roc_agree = sklearn.metrics.roc_auc_score(
-                y_true=labels[layer][agreement[layer]],
-                y_score=scores[layer][agreement[layer]],
+                y_true=labels[layer][agreement[layer].astype(bool)],
+                y_score=scores[layer][agreement[layer].astype(bool)],
             )
             ap_agree = sklearn.metrics.average_precision_score(
-                y_true=labels[layer][agreement[layer]],
-                y_score=scores[layer][agreement[layer]],
+                y_true=labels[layer][agreement[layer].astype(bool)],
+                y_score=scores[layer][agreement[layer].astype(bool)],
             )
             logger.info(f"AUC_ROC_AGREE ({layer}): {auc_roc_agree:.4f}")
             logger.info(f"AP_AGREE ({layer}): {ap_agree:.4f}")
@@ -184,12 +186,12 @@ class AnomalyDetector(ABC):
             metrics[layer]["AP_AGREE"] = ap_agree
 
             auc_roc_disagree = sklearn.metrics.roc_auc_score(
-                y_true=labels[layer][~agreement[layer]],
-                y_score=scores[layer][~agreement[layer]],
+                y_true=labels[layer][~agreement[layer].astype(bool)],
+                y_score=scores[layer][~agreement[layer].astype(bool)],
             )
             ap_disagree = sklearn.metrics.average_precision_score(
-                y_true=labels[layer][~agreement[layer]],
-                y_score=scores[layer][~agreement[layer]],
+                y_true=labels[layer][~agreement[layer].astype(bool)],
+                y_score=scores[layer][~agreement[layer].astype(bool)],
             )
             logger.info(f"AUC_ROC_DISAGREE ({layer}): {auc_roc_disagree:.4f}")
             logger.info(f"AP_DISAGREE ({layer}): {ap_disagree:.4f}")
@@ -306,6 +308,29 @@ class AnomalyDetector(ABC):
         self._set_trained_variables(utils.load(path))
 
 
+class AccuracyDetector(AnomalyDetector):
+    """
+    Convenience class for evaluating answer accuracy instead of anomaly detection
+    """
+
+    def train(self, **kwargs):
+        pass
+    
+    def layerwise_scores(self, batch) -> dict[str, torch.Tensor]:
+        raise NotImplementedError('This detector calculates scores directly')
+    
+    def scores(self, batch) -> torch.Tensor:
+        inputs = utils.inputs_from_batch(batch)
+        encoding = self.model.tokenize(inputs)
+        mask = encoding['attention_mask']
+
+        no_token = self.model.tokenizer.encode(' No', add_special_tokens=False)[-1]
+        yes_token = self.model.tokenizer.encode(' Yes', add_special_tokens=False)[-1]
+        effect_tokens = torch.tensor([no_token, yes_token], dtype=torch.long, device=self.model.device)
+
+        logits = self.model(inputs).logits[..., effect_tokens][range(len(inputs)), mask.sum(dim=1) - 1]
+        return torch.nn.functional.softmax(logits, dim=1)[:, 1]
+
 class IterativeAnomalyDetector(AnomalyDetector):
     def train(
         self,
@@ -322,13 +347,12 @@ class IterativeAnomalyDetector(AnomalyDetector):
     def scores(self, batch) -> torch.Tensor:
         inputs = utils.inputs_from_batch(batch)
         encoding = self.model.tokenize(inputs)
-        input_ids = encoding['input_ids']
         mask = encoding['attention_mask']
 
         # Get logits for 'No' and 'Yes' tokens
         no_token = self.model.tokenizer.encode(' No', add_special_tokens=False)[-1]
         yes_token = self.model.tokenizer.encode(' Yes', add_special_tokens=False)[-1]
-        effect_tokens = torch.tensor([no_token, yes_token], dtype=torch.long, device=input_ids.device)
+        effect_tokens = torch.tensor([no_token, yes_token], dtype=torch.long, device=self.model.device)
 
         # Perform a forward pass to get logits at the last non-padded position
         logits = self.model(inputs).logits[..., effect_tokens][range(len(inputs)), mask.sum(dim=1) - 1]
@@ -347,7 +371,6 @@ class IterativeAnomalyDetector(AnomalyDetector):
 
         # Encode the modified prompts
         modified_encoding = self.model.tokenize(modified_prompts)
-        modified_input_ids = modified_encoding['input_ids']
         modified_mask = modified_encoding['attention_mask']
 
         # Perform a second forward pass

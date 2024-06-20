@@ -6,6 +6,7 @@ from pathlib import Path
 from cupbearer.detectors.activations import get_last_token_activation_function_for_task
 from cupbearer.detectors.statistical.probe_detector import probe_error
 from cupbearer.detectors.statistical.helpers import mahalanobis_from_data, local_outlier_factor
+from cupbearer.scripts.measure_accuracy import measure_accuracy
 import gc
 
 datasets = [
@@ -16,19 +17,19 @@ datasets = [
     "sentiment",
     "nli",
     "authors",
-    # "addition",
-    # "subtraction",
-    # "multiplication",
-    # "modularaddition",
-    # "squaring",
+    "addition",
+    "subtraction",
+    "multiplication",
+    "modularaddition",
+    # "squaring", Not trained yet
 ]
 
 
-def main(dataset, detector_type, first_layer, last_layer, model_name, features, ablation, k=20):
+def main(dataset, detector_type, first_layer, last_layer, model_name, features, ablation, k=20, random_names=True, layerwise=False, alpha=8):
     interval = max(1, (last_layer - first_layer) // 4)
     layers = list(range(first_layer, last_layer + 1, interval))
 
-    task = tasks.quirky_lm(include_untrusted=True, mixture=True, standardize_template=True, dataset=dataset, random_names=True)
+    task = tasks.quirky_lm(include_untrusted=True, mixture=True, standardize_template=True, dataset=dataset, random_names=random_names)
 
     no_token = task.model.tokenizer.encode(' No', add_special_tokens=False)[-1]
     yes_token = task.model.tokenizer.encode(' Yes', add_special_tokens=False)[-1]
@@ -42,10 +43,16 @@ def main(dataset, detector_type, first_layer, last_layer, model_name, features, 
 
     activation_processing_function = get_last_token_activation_function_for_task(task)
 
-    if features == "attribution":
+    answer_accuracy = False
+
+    if detector_type == "accuracy":
+        measure_accuracy(task, batch_size=32, pbar=False, save_path=f"logs/quirky/{dataset}-accuracy", histogram_percentile=95)
+        return
+
+    elif features == "attribution":
         batch_size = 1
         eval_batch_size = 1
-        layer_dict = {f"hf_model.base_model.model.model.layers.{layer}.self_attn": (4096,) for layer in layers}
+        layer_dict = {f"hf_model.model.layers.{layer}.self_attn": (4096,) for layer in layers}
 
         if detector_type == "mahalanobis":
             detector = atp_detector.MahaAttributionDetector(
@@ -85,7 +92,9 @@ def main(dataset, detector_type, first_layer, last_layer, model_name, features, 
         eval_batch_size = 20
 
 
-        layer_list = [f"hf_model.base_model.model.model.layers.{layer}.input_layernorm.input" for layer in layers]
+        layer_list = [f"hf_model.model.layers.{layer}.input_layernorm.input" for layer in layers]
+        if 32 in layers:
+            layer_list[-1] = "hf_model.model.norm.input"
 
         if detector_type == "mahalanobis":
             detector = detectors.MahalanobisDetector(
@@ -103,6 +112,7 @@ def main(dataset, detector_type, first_layer, last_layer, model_name, features, 
             detector = detectors.statistical.que_detector.QuantumEntropyDetector(
                 activation_names=layer_list,
                 activation_processing_func=activation_processing_function,
+                alpha=alpha
             )
         elif detector_type == 'spectral':
             detector = detectors.statistical.spectral_detector.SpectralSignatureDetector(
@@ -111,6 +121,16 @@ def main(dataset, detector_type, first_layer, last_layer, model_name, features, 
             )
         elif detector_type == 'likelihood':
             detector = detectors.statistical.likelihood_ratio_detector.LikelihoodRatioDetector(
+                activation_names=layer_list,
+                activation_processing_func=activation_processing_function,
+            )
+        elif detector_type == 'em':
+            detector = detectors.statistical.likelihood_ratio_detector.ExpectationMaximisationDetector(
+                activation_names=layer_list,
+                activation_processing_func=activation_processing_function,
+            )
+        elif detector_type == 'probe_trajectory':
+            detector = detectors.statistical.contrast_detector.ProbeTrajectoryDetector(
                 activation_names=layer_list,
                 activation_processing_func=activation_processing_function,
             )
@@ -135,7 +155,7 @@ def main(dataset, detector_type, first_layer, last_layer, model_name, features, 
 
     elif features == "probe":
  
-        layer_dict = {f"hf_model.base_model.model.model.layers.{layer}.self_attn": (4096,) for layer in layers}
+        layer_dict = {f"hf_model.model.layers.{layer}.self_attn": (4096,) for layer in layers}
 
         batch_size = 1
         eval_batch_size = 1
@@ -173,7 +193,7 @@ def main(dataset, detector_type, first_layer, last_layer, model_name, features, 
         batch_size = 4
         eval_batch_size = 4
 
-        layer_list = [f"hf_model.base_model.model.model.layers.{layer}.input_layernorm.input" for layer in layers]
+        layer_list = [f"hf_model.model.layers.{layer}.input_layernorm.input" for layer in layers]
 
         detector = detectors.statistical.MisconceptionContrastDetector(
             layer_list,
@@ -190,10 +210,12 @@ def main(dataset, detector_type, first_layer, last_layer, model_name, features, 
 
     if detector_type == "lof":
         save_path += f"-{k}"
+    if detector_type == "que":
+        save_path += f"-{alpha}"
 
     if Path(save_path).exists():
         detector.load_weights(Path(save_path) / "detector")
-        scripts.eval_detector(task, detector, save_path, pbar=True, batch_size=eval_batch_size, train_from_test=False, layerwise=True)
+        scripts.eval_detector(task, detector, save_path, pbar=True, batch_size=eval_batch_size, train_from_test=False, layerwise=layerwise, answer_accuracy=answer_accuracy)
     else:
         scripts.train_detector(task, detector, 
                         batch_size=batch_size, 
@@ -201,7 +223,8 @@ def main(dataset, detector_type, first_layer, last_layer, model_name, features, 
                         eval_batch_size=eval_batch_size,
                         pbar=True,
                         train_from_test=False,
-                        layerwise=True)
+                        layerwise=layerwise,
+                        answer_accuracy=answer_accuracy)
     
     del task, detector
     gc.collect()
@@ -217,14 +240,41 @@ if __name__ == '__main__':
     parser.add_argument('--dataset', type=str, default='sciq', help='Dataset to use (sciq, addition)')
     parser.add_argument('--k', type=int, default=20, help='k to use for LOF')
     parser.add_argument('--sweep_layers', action='store_true', default=False, help='Sweep layers one by one')
+    parser.add_argument('--alpha', type=float, default=4, help='Alpha to use for QUE')
+    parser.add_argument('--sweep_alpha', action='store_true', default=False, help='Sweep alpha one by one')
+    parser.add_argument('--layerwise', action='store_true', default=False, help='Evaluate layerwise instead of aggregated')
+    parser.add_argument('--nonrandom_names', action='store_true', default=False, help='Avoid randomising names')
 
     args = parser.parse_args()
-    if args.sweep_layers:
+
+    def run_main_with_args(dataset, first_layer, last_layer, alpha):
+        main(
+            dataset, 
+            args.detector_type, 
+            first_layer, 
+            last_layer, 
+            args.model_name, 
+            args.features, 
+            args.ablation, 
+            k=args.k, 
+            alpha=alpha, 
+            layerwise=args.layerwise, 
+            random_names=not args.nonrandom_names
+        )
+
+    if args.sweep_alpha:
+        for alpha in range(0, 40, 4):
+            if args.dataset == "all":
+                for dataset in datasets:
+                    run_main_with_args(dataset, args.first_layer, args.last_layer, alpha)
+            else:
+                run_main_with_args(args.dataset, args.first_layer, args.last_layer, alpha)
+    elif args.sweep_layers:
         for layer in range(args.first_layer, args.last_layer + 1):
-            main(args.dataset, args.detector_type, layer, layer, args.model_name, args.features, args.ablation, k=args.k)
+            run_main_with_args(args.dataset, layer, layer, args.alpha)
     elif args.dataset == "all":
         for dataset in datasets:
-            main(dataset, args.detector_type, args.first_layer, args.last_layer, args.model_name, args.features, args.ablation, k=args.k)
+            run_main_with_args(dataset, args.first_layer, args.last_layer, args.alpha)
     else:
-        main(args.dataset, args.detector_type, args.first_layer, args.last_layer, args.model_name, args.features, args.ablation, k=args.k)
+        run_main_with_args(args.dataset, args.first_layer, args.last_layer, args.alpha)
 

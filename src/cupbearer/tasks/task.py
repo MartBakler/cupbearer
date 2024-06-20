@@ -26,7 +26,7 @@ class Task:
         anomalous_untrusted_data: Optional[Dataset] = None,
         clean_train_weight: Optional[float] = 0.5,
         clean_test_weight: Optional[float] = 0.5,
-        untrusted_labels: bool = False,
+        untrusted_labels: list = [],
         train_test_mix: bool = False,
     ):
         untrusted_train_data = None
@@ -35,13 +35,14 @@ class Task:
                 normal=clean_untrusted_data,
                 anomalous=anomalous_untrusted_data,
                 normal_weight=clean_train_weight,
-                return_anomaly_labels=untrusted_labels,
+                return_labels=untrusted_labels,
             )
 
         test_data = MixedData(
             normal=clean_test_data,
             anomalous=anomalous_test_data,
             normal_weight=clean_test_weight,
+            return_labels=['anomaly', 'agreement']
         )
 
         train_test_mix_data = None
@@ -50,7 +51,7 @@ class Task:
                 normal=anomalous_untrusted_data,
                 anomalous=anomalous_test_data,
                 normal_weight=clean_train_weight,
-                return_anomaly_labels=True
+                return_labels=['anomaly', 'agreement']
             )
 
         return Task(

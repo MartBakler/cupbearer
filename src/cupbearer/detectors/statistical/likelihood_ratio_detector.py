@@ -5,7 +5,8 @@ from tqdm import tqdm
 from einops import rearrange
 import pdb
 
-from cupbearer.detectors.statistical.helpers import update_covariance
+from cupbearer.utils.optimal_shrinkage import optimal_linear_shrinkage
+
 
 from .statistical import ActivationCovarianceBasedDetector
 
@@ -65,7 +66,7 @@ class LikelihoodRatioDetector(ActivationCovarianceBasedDetector):
     def post_covariance_training(self, **kwargs):
         pass
 
-    def train(self, trusted_data, untrusted_data, epsilon=5e-6, **kwargs):
+    def train(self, trusted_data, untrusted_data, **kwargs):
 
         super().train(trusted_data=trusted_data, untrusted_data=untrusted_data, **kwargs)
 
@@ -117,7 +118,7 @@ class LikelihoodRatioDetector(ActivationCovarianceBasedDetector):
             }
 
             self.covariances = {
-                k: project_cov_matrix(covariances[k], self.preferred_basis[k])
+                k: optimal_linear_shrinkage(project_cov_matrix(covariances[k], self.preferred_basis[k]), len(self._activations[k]))
                 for k in covariances.keys()
             }
 
@@ -126,7 +127,7 @@ class LikelihoodRatioDetector(ActivationCovarianceBasedDetector):
                 for k in means_untrusted.keys()
             }
             self.covariances_untrusted = {
-                k: project_cov_matrix(covariances_untrusted[k], self.preferred_basis[k])
+                k: optimal_linear_shrinkage(project_cov_matrix(covariances_untrusted[k], self.preferred_basis[k]), len(self._activations_untrusted[k]))
                 for k in covariances_untrusted.keys()
             }
 
@@ -153,6 +154,9 @@ class LikelihoodRatioDetector(ActivationCovarianceBasedDetector):
             log_prob_untrusted = untrusted_dist.log_prob(
                 project_data(activation, self.preferred_basis[k])
             )
+            # log_prob_trusted = trusted_dist.log_prob(activation)
+            # log_prob_untrusted = untrusted_dist.log_prob(activation)
+
             scores[k] =  log_prob_untrusted - log_prob_trusted
 
         return scores
@@ -176,3 +180,58 @@ class LikelihoodRatioDetector(ActivationCovarianceBasedDetector):
         self.trusted_basis = variables["trusted_basis"]
         self.untrusted_basis = variables["untrusted_basis"]
         self.preferred_basis = variables["preferred_basis"]
+
+
+class ExpectationMaximisationDetector(LikelihoodRatioDetector):
+    def train(self, trusted_data, untrusted_data, iterations=100, **kwargs):
+        super().train(trusted_data=trusted_data, untrusted_data=untrusted_data, **kwargs)
+        self.activations = self._activations
+        self.activations_untrusted = self._activations_untrusted
+
+        for _ in range(iterations):
+            # E-step: calculate responsibilities
+            responsibilities = {}
+
+            activations_trusted = {k: project_data(self.activations[k], self.preferred_basis[k]) for k in self.activations.keys()}
+            activations_untrusted = {k: project_data(self.activations_untrusted[k], self.preferred_basis[k]) for k in self.activations_untrusted.keys()}
+
+            for k in activations_untrusted.keys():
+                trusted_dist = MultivariateNormal(self.means[k], self.covariances[k])
+                untrusted_dist = MultivariateNormal(self.means_untrusted[k], self.covariances_untrusted[k])
+
+                log_prob_trusted = trusted_dist.log_prob(activations_untrusted[k])
+                log_prob_untrusted = untrusted_dist.log_prob(activations_untrusted[k])
+
+                denominator = torch.logsumexp(torch.cat([log_prob_trusted.unsqueeze(1), log_prob_untrusted.unsqueeze(1)], dim=1), dim=1)
+
+                responsibilities[k] = torch.exp(log_prob_trusted - denominator)
+
+            avg_responsibilities = torch.cat([responsibilities[k].unsqueeze(1) for k in responsibilities.keys()], dim=1).mean(dim=1, keepdim=True)
+            # M-step: update parameters
+            for k in activations_untrusted.keys():
+                self.means_untrusted[k] = ((1 - avg_responsibilities) * activations_untrusted[k]).sum(dim=0) / (1 - avg_responsibilities).sum()
+
+                centered_untrusted = activations_untrusted[k] - self.means_untrusted[k]
+
+                self.covariances_untrusted[k] = optimal_linear_shrinkage((centered_untrusted.T @ (centered_untrusted * (1 - avg_responsibilities))) / (1 - avg_responsibilities).sum(), (1 - avg_responsibilities).sum())
+
+
+    def _get_trained_variables(self, saving: bool = False):
+        return {
+            "means": self.means,
+            "covariances": self.covariances,
+            "means_untrusted": self.means_untrusted,
+            "covariances_untrusted": self.covariances_untrusted,
+            "activations": self.activations,
+            "activations_untrusted": self.activations_untrusted,
+            "preferred_basis": self.preferred_basis,
+        }
+
+    def _set_trained_variables(self, variables):
+        self.means = variables["means"]
+        self.covariances = variables["covariances"]
+        self.means_untrusted = variables["means_untrusted"]
+        self.covariances_untrusted = variables["covariances_untrusted"]
+        self.preferred_basis = variables["preferred_basis"]
+        self.activations = variables["activations"]
+        self.activations_untrusted = variables["activations_untrusted"]
